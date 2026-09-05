@@ -14,6 +14,7 @@ final class MeetingAssistant {
     private var panelLabel: NSTextField?
     private var panelKind: String?
     private var enabled = Config.meetingDetection()
+    private var lastStatus: String?
 
     func start() {
         timer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
@@ -60,12 +61,20 @@ final class MeetingAssistant {
     func keepRecording() {
         policy.keepRecording()
         closePanel()
-        onStatus?("Automatic stop off for this recording", enabled)
+        report("Automatic stop off for this recording", enabled)
+    }
+
+    private func report(_ text: String, _ enabled: Bool) {
+        if text != lastStatus {
+            FileHandle.standardError.write(Data("meeting detection: \(text)\n".utf8))
+            lastStatus = text
+        }
+        onStatus?(text, enabled)
     }
 
     private func poll() {
         guard enabled else {
-            onStatus?("Meeting detection off", false)
+            report("Meeting detection off", false)
             return
         }
         guard !scanning else { return }
@@ -79,14 +88,14 @@ final class MeetingAssistant {
             let action = self.policy.update(scan.observations, now: ProcessInfo.processInfo.systemUptime)
             if scan.needsPermission {
                 self.closePanel()
-                self.onStatus?("Meeting detection needs Accessibility permission", true)
+                self.report("Meeting detection needs Accessibility permission", true)
                 return
             } else if let meeting = self.policy.recordingMeeting {
-                self.onStatus?("Watching \(meeting.service) in \(meeting.app)", true)
+                self.report("Watching \(meeting.service) in \(meeting.app)", true)
             } else if self.policy.recording {
-                self.onStatus?(self.policy.automaticStop ? "No meeting linked; stop recording manually" : "Automatic stop off for this recording", true)
+                self.report(self.policy.automaticStop ? "No meeting linked; stop recording manually" : "Automatic stop off for this recording", true)
             } else {
-                self.onStatus?("Meeting detection on", true)
+                self.report("Meeting detection on", true)
             }
             switch action {
             case .prompt(let meeting):
@@ -99,7 +108,7 @@ final class MeetingAssistant {
                 notifyUser(title: "Quill recording stopped", body: "The meeting ended. Your recording is being transcribed.")
             case .unavailable:
                 self.closePanel()
-                self.onStatus?("Meeting status unavailable; recording continues", true)
+                self.report("Meeting status unavailable; recording continues", true)
             case .none:
                 self.closePanel()
             }
@@ -129,6 +138,7 @@ final class MeetingAssistant {
         panel.contentView?.addSubview(second)
         panel.center()
         panel.orderFrontRegardless()
+        FileHandle.standardError.write(Data("meeting detection: \(kind == "stop" ? "stop countdown" : "start prompt") shown\n".utf8))
         self.panel = panel
         panelLabel = label
         panelKind = kind
