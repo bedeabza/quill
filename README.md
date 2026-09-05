@@ -8,9 +8,17 @@ Nothing ever leaves the machine.
 Named for the feather. Sibling of [parrot](https://github.com/digimata/parrot), same skeleton: single
 Swift binary, menu-bar tray, no app bundle.
 
+## Source
+
+Use [bedeabza/quill](https://github.com/bedeabza/quill) for builds and updates.
+This fork includes automatic meeting recording and start/stop banners. The
+original [digimata/quill](https://github.com/digimata/quill) is retained as the
+upstream project.
+
 ## Install
 
 ```sh
+git clone https://github.com/bedeabza/quill.git
 cd quill
 swift build -c release
 sudo cp .build/release/quill /usr/local/bin/quill
