@@ -3,9 +3,25 @@
 <plist version="1.0">
 <dict>
     <key>CFBundleIdentifier</key>
-    <string>com.digimata.quill</string>
+    <string>com.bedeabza.quill</string>
     <key>CFBundleName</key>
+    <string>Quill</string>
+    <key>CFBundleDisplayName</key>
+    <string>Quill</string>
+    <key>CFBundleExecutable</key>
     <string>quill</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleShortVersionString</key>
+    <string>1.0</string>
+    <key>CFBundleVersion</key>
+    <string>1</string>
+    <key>LSUIElement</key>
+    <true/>
+    <key>LSMinimumSystemVersion</key>
+    <string>15.0</string>
+    <key>NSPrincipalClass</key>
+    <string>NSApplication</string>
     <key>NSMicrophoneUsageDescription</key>
     <string>quill records your microphone during meetings so you can transcribe them later. Audio never leaves this Mac.</string>
     <key>NSAudioCaptureUsageDescription</key>

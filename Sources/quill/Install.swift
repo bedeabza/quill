@@ -3,9 +3,8 @@ import Foundation
 
 /// Manage quill's LaunchAgent so the daemon starts at login.
 ///
-/// We deliberately do NOT use SMAppService.mainApp here — that requires a full
-/// .app bundle. Since quill ships as a single binary in /usr/local/bin, a
-/// plain LaunchAgent plist is the simpler, more honest mechanism.
+/// Keep the existing LaunchAgent label so upgrading to Quill.app does not
+/// introduce a second login service.
 struct Install: ParsableCommand {
     static let configuration = CommandConfiguration(
         abstract: "Install or remove the launch-at-login LaunchAgent."
@@ -68,8 +67,8 @@ struct Install: ParsableCommand {
         )
         try data.write(to: url, options: .atomic)
 
-        // Best-effort bootstrap; ignore failure if already loaded.
-        _ = runLaunchctl(["bootout", "gui/\(uid())", url.path])
+        // Never unload an existing service here: it may be recording.
+        // An already loaded job will use the updated plist on the next login.
         let result = runLaunchctl(["bootstrap", "gui/\(uid())", url.path])
         if result.status != 0 {
             FileHandle.standardError.write(Data(
@@ -95,6 +94,9 @@ struct Install: ParsableCommand {
     }
 
     private func resolveBinaryPath() throws -> String {
+        if Bundle.main.bundleURL.pathExtension == "app", let executable = Bundle.main.executableURL {
+            return executable.path
+        }
         // /usr/local/bin/quill is the canonical install path. Honor a real
         // location if running from elsewhere (e.g. dev).
         let candidate = "/usr/local/bin/quill"

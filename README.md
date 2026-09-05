@@ -5,8 +5,8 @@ click records your mic and all system audio as two separate tracks; when you
 stop, quill transcribes both on-device and writes a speaker-tagged transcript.
 Nothing ever leaves the machine.
 
-Named for the feather. Sibling of [parrot](https://github.com/digimata/parrot), same skeleton: single
-Swift binary, menu-bar tray, no app bundle.
+Named for the feather. Sibling of [parrot](https://github.com/digimata/parrot), now packaged as a native macOS
+menu-bar app with its own identity, icon, and notification permissions.
 
 ## Source
 
@@ -21,9 +21,37 @@ upstream project.
 git clone https://github.com/bedeabza/quill.git
 cd quill
 swift build -c release
-sudo cp .build/release/quill /usr/local/bin/quill
-quill install --launch-at-login   # optional — runs in the background on login
+python3 tools/package-app.py
 ```
+
+Move `.build/Quill.app` to `~/Applications` using Finder. Quit an older copy
+before replacing it. Quill keeps recordings and configuration outside the app,
+so replacing the app preserves both.
+
+To keep the terminal command and start Quill at login:
+
+```sh
+python3 tools/install-cli.py
+"$HOME/Applications/Quill.app/Contents/MacOS/quill" install --launch-at-login
+```
+
+Open Quill once and allow Notifications and Microphone when macOS asks. Enable
+**Quill** under Privacy & Security > Accessibility for meeting detection. System
+audio permission is requested on the first recording. Only one recording app
+instance can run, whether opened from Finder, the terminal, or the login service.
+
+Native notification diagnostics:
+
+```sh
+quill notifications         # report this app's notification authorization
+quill notifications --test  # send a test and confirm Notification Center delivery
+```
+
+The app uses Apple's UserNotifications framework directly. Denial and delivery
+failures are reported in the log; no AppleScript bridge or separate helper is
+used. Desktop banners remain subject to macOS notification and Focus settings.
+The terminal launcher executes the app binary by its full path, preserving
+macOS bundle identity; a plain symlink does not reliably preserve that identity.
 
 **Requires:** macOS 15+ (Core Audio process taps for system audio — no
 virtual device, no kernel extension). Apple Silicon recommended for
@@ -167,5 +195,5 @@ quill install --uninstall
   Screen & System Audio Recording.
 - Parakeet v2 is English-only. Other languages will come with the Whisper
   engine.
-- The binary embeds its Info.plist (`__TEXT,__info_plist`) so TCC can
-  attribute permissions to quill itself when running as a LaunchAgent.
+- The app bundle provides Quill's identity and permission descriptions. Local
+  ad-hoc-signed rebuilds may require refreshing Quill's Accessibility entry.

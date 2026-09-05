@@ -1,4 +1,5 @@
 import AppKit
+import AVFoundation
 import ArgumentParser
 import Foundation
 
@@ -7,9 +8,41 @@ struct Quill: ParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "quill",
         abstract: "Local meeting recorder + transcriber. Records mic and system audio as two tracks, then transcribes on-device.",
-        subcommands: [Run.self, Doctor.self, Install.self, Meetings.self],
+        subcommands: [Run.self, Doctor.self, Install.self, Meetings.self, Notifications.self],
         defaultSubcommand: Run.self
     )
+}
+
+struct Notifications: ParsableCommand {
+    static let configuration = CommandConfiguration(abstract: "Check Quill's native notifications or send a test.")
+    @Flag(help: "Send a test and confirm Notification Center delivery.")
+    var test = false
+
+    func run() throws {
+        let test = self.test
+        MainActor.assumeIsolated {
+            let app = NSApplication.shared
+            app.setActivationPolicy(.accessory)
+            Task {
+                do {
+                    var result = try await NativeNotifications.shared.status()
+                    if test {
+                        let id = try await NativeNotifications.shared.send(title: "Quill: Notifications are ready", body: "Recording start and stop will appear here.")
+                        result = try await NativeNotifications.shared.status()
+                        result["status"] = "delivered"
+                        result["notification_id"] = id
+                    }
+                    let data = try JSONSerialization.data(withJSONObject: result, options: [.sortedKeys])
+                    FileHandle.standardOutput.write(data + Data("\n".utf8))
+                    Darwin.exit(0)
+                } catch {
+                    FileHandle.standardError.write(Data("Quill notification check failed: \(error)\n".utf8))
+                    Darwin.exit(1)
+                }
+            }
+            app.run()
+        }
+    }
 }
 
 struct Meetings: ParsableCommand {
@@ -68,6 +101,10 @@ struct Run: ParsableCommand {
 
     @MainActor
     private func runMain() throws {
+        guard let runLock = try AppRunLock.acquire() else {
+            print("Quill is already running.")
+            return
+        }
         let root = Config.resolveRoot(cliOverride: out)
 
         // Non-blocking: permissions prompt on first recording, so warnings at
@@ -83,19 +120,30 @@ struct Run: ParsableCommand {
         app.setActivationPolicy(.accessory)
 
         let controller = AppController(root: root)
-
-        let sigint = DispatchSource.makeSignalSource(signal: SIGINT, queue: .main)
-        sigint.setEventHandler {
-            FileHandle.standardError.write(Data("\nshutting down\n".utf8))
-            MainActor.assumeIsolated { controller.shutdown() }
+        app.delegate = controller
+        Task {
+            do { try await NativeNotifications.shared.authorize() }
+            catch { FileHandle.standardError.write(Data("Quill notifications: \(error)\n".utf8)) }
+            if AVCaptureDevice.authorizationStatus(for: .audio) == .notDetermined {
+                _ = await AVCaptureDevice.requestAccess(for: .audio)
+            }
         }
-        sigint.resume()
-        signal(SIGINT, SIG_IGN)
+
+        let terminationSignals = [SIGINT, SIGTERM].map { number in
+            let source = DispatchSource.makeSignalSource(signal: number, queue: .main)
+            source.setEventHandler {
+                FileHandle.standardError.write(Data("\nshutting down\n".utf8))
+                MainActor.assumeIsolated { controller.shutdown() }
+            }
+            source.resume()
+            signal(number, SIG_IGN)
+            return source
+        }
 
         FileHandle.standardError.write(Data(
             "quill up · recordings → \(root.path) · ^C to quit\n".utf8
         ))
-        app.run()
+        withExtendedLifetime((runLock, terminationSignals, controller)) { app.run() }
     }
 }
 
@@ -116,7 +164,7 @@ struct Doctor: ParsableCommand {
 /// Owns the menu bar, the current recording session, and the elapsed-time
 /// ticker. All state transitions happen on the main actor.
 @MainActor
-final class AppController {
+final class AppController: NSObject, NSApplicationDelegate {
     private let root: URL
     private let menuBar = MenuBarController()
     private let transcription = TranscriptionCoordinator()
@@ -126,6 +174,7 @@ final class AppController {
 
     init(root: URL) {
         self.root = root
+        super.init()
         menuBar.onToggle = { [weak self] in self?.toggle() }
         menuBar.onOpenFolder = { [weak self] in self?.openFolder() }
         menuBar.onQuit = { [weak self] in self?.shutdown() }
@@ -156,6 +205,10 @@ final class AppController {
         meetings.shutdown()
         stopSession()
         NSApp.terminate(nil)
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        stopSession()
     }
 
     private func toggle() {
