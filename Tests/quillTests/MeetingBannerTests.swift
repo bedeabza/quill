@@ -1,28 +1,20 @@
-import AppKit
 import XCTest
 @testable import quill
 
 final class MeetingBannerTests: XCTestCase {
     @MainActor
-    func testRecordingEventsShowBannersWithoutConfirmationControls() async {
-        NSApplication.shared.setActivationPolicy(.accessory)
-        let assistant = MeetingAssistant()
-        defer { assistant.shutdown() }
-
-        // Drive only the UI event callbacks; this does not capture audio.
+    func testRecordingEventsRequestNativeNotifications() async {
+        var messages: [(String, String)] = []
+        let assistant = MeetingAssistant(recordingNotification: { messages.append(($0, $1)) })
         assistant.recordingStarted()
-        var banner = NSApp.windows.first { $0.title == "Quill" && $0.isVisible }
-        XCTAssertNotNil(banner)
-        XCTAssertTrue(banner?.contentView?.subviews.compactMap { ($0 as? NSTextField)?.stringValue }
-            .contains("Quill: Recording started") == true)
-        XCTAssertFalse(banner?.contentView?.subviews.contains { $0 is NSButton } ?? true)
-
         assistant.recordingStopped()
-        banner = NSApp.windows.first { $0.title == "Quill" && $0.isVisible }
-        XCTAssertTrue(banner?.contentView?.subviews.compactMap { ($0 as? NSTextField)?.stringValue }
-            .contains("Quill: Recording stopped") == true)
-        XCTAssertFalse(banner?.contentView?.subviews.contains { $0 is NSButton } ?? true)
+        XCTAssertEqual(messages.count, 2)
+        XCTAssertEqual(messages.map { $0.0 }, ["Quill: Recording started", "Quill: Recording stopped"])
+        XCTAssertEqual(messages.map { $0.1 }, [
+            "Recording microphone and system audio.",
+            "Your recording is being prepared for transcription.",
+        ])
         assistant.shutdown()
-        XCTAssertFalse(banner?.isVisible ?? true)
+        XCTAssertEqual(messages.count, 2)
     }
 }

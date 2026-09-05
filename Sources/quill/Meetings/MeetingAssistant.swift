@@ -10,11 +10,14 @@ final class MeetingAssistant {
     private let scanner = MeetingScanner()
     private var timer: Timer?
     private var scanning = false
-    private var panel: NSPanel?
-    private var bannerTimer: Timer?
+    private let recordingNotification: (String, String) -> Void
     private var automaticStart: DetectedMeeting?
     private var enabled = Config.meetingDetection()
     private var lastStatus: String?
+
+    init(recordingNotification: @escaping (String, String) -> Void = notifyUser) {
+        self.recordingNotification = recordingNotification
+    }
 
     func start() {
         _ = policy.setAutomationEnabled(enabled)
@@ -27,7 +30,6 @@ final class MeetingAssistant {
     func shutdown() {
         timer?.invalidate()
         timer = nil
-        closePanel()
     }
 
     func toggleEnabled() {
@@ -51,17 +53,16 @@ final class MeetingAssistant {
 
     func recordingStarted() {
         policy.recordingStarted(for: automaticStart, automatic: automaticStart != nil)
-        showBanner(title: "Recording started", body: automaticStart.map { "\($0.service) in \($0.app)" } ?? "Recording microphone and system audio.")
+        recordingNotification("Quill: Recording started", automaticStart.map { "\($0.service) in \($0.app)" } ?? "Recording microphone and system audio.")
     }
 
     func recordingStopped() {
         policy.recordingStopped()
-        showBanner(title: "Recording stopped", body: "Your recording is being prepared for transcription.")
+        recordingNotification("Quill: Recording stopped", "Your recording is being prepared for transcription.")
     }
 
     func keepRecording() {
         policy.keepRecording()
-        closePanel()
         report("Automatic stop off for this recording", enabled)
     }
 
@@ -114,49 +115,4 @@ final class MeetingAssistant {
         }
     }
 
-    private func showBanner(title: String, body: String) {
-        closePanel()
-        let size = NSSize(width: 370, height: 92)
-        let panel = NSPanel(contentRect: NSRect(origin: .zero, size: size),
-                            styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
-        panel.title = "Quill"
-        panel.isReleasedWhenClosed = false
-        panel.isOpaque = false
-        panel.backgroundColor = .clear
-        panel.hasShadow = true
-        panel.level = .floating
-        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
-        let content = NSVisualEffectView(frame: NSRect(origin: .zero, size: size))
-        content.material = .hudWindow
-        content.state = .active
-        content.wantsLayer = true
-        content.layer?.cornerRadius = 14
-        content.layer?.masksToBounds = true
-        let heading = NSTextField(labelWithString: "Quill: " + title)
-        heading.font = .boldSystemFont(ofSize: 14)
-        heading.frame = NSRect(x: 18, y: 57, width: 334, height: 20)
-        let detail = NSTextField(wrappingLabelWithString: body)
-        detail.font = .systemFont(ofSize: 12)
-        detail.frame = NSRect(x: 18, y: 14, width: 334, height: 36)
-        content.addSubview(heading)
-        content.addSubview(detail)
-        panel.contentView = content
-        if let screen = NSScreen.main ?? NSScreen.screens.first {
-            let frame = screen.visibleFrame
-            panel.setFrameOrigin(NSPoint(x: frame.maxX - size.width - 16, y: frame.maxY - size.height - 12))
-        }
-        panel.orderFrontRegardless()
-        FileHandle.standardError.write(Data("meeting detection: \(title.lowercased()) banner shown\n".utf8))
-        self.panel = panel
-        bannerTimer = Timer.scheduledTimer(withTimeInterval: 6, repeats: false) { [weak self] _ in
-            MainActor.assumeIsolated { self?.closePanel() }
-        }
-    }
-
-    private func closePanel() {
-        bannerTimer?.invalidate()
-        bannerTimer = nil
-        panel?.close()
-        panel = nil
-    }
 }

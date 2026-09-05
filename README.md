@@ -106,9 +106,10 @@ Optional, at `~/.config/quill/config.json`:
 
 With **Automatic meeting recording** enabled in the menu, Quill starts detected
 meetings automatically and stops 30 seconds after the associated meeting tab or
-call window closes. Brief banners announce recording start and stop, without
-asking for confirmation. Use **Allow meeting detection** to grant macOS
-Accessibility permission. Turning the toggle off stops an automatically started
+call window closes. Native macOS notifications announce recording start and stop,
+without asking for confirmation. Their appearance and visibility follow macOS
+notification preferences and Focus settings. Use **Allow meeting detection** to
+grant macOS Accessibility permission. Turning the toggle off stops an automatically started
 recording; manually started recordings remain under manual control. The menu
 also offers **Keep recording after meeting ends**. Manually stopping a recording
 suppresses automatic restart for that meeting until it ends or the toggle is
