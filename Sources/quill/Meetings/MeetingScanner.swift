@@ -67,6 +67,7 @@ actor MeetingScanner {
     private var serial = 0
     private var enabledAccessibility: Set<pid_t> = []
     private var endedSince: [String: TimeInterval] = [:]
+    private var endState = MeetingEndState()
 
     func scan(apps: [MeetingApp]) -> MeetingScan {
         var result = MeetingScan()
@@ -103,16 +104,17 @@ actor MeetingScanner {
                     continue
                 }
 
-                // Meet's meeting code appears in background tab labels as well as URLs.
+                // A URL establishes a meeting. Tab labels only maintain an already
+                // established identity, so arbitrary page titles cannot start capture.
                 for node in window.nodes where node.isTab || node.role == "AXWebArea" {
                     let code = MeetingEvidence.meetCode(in: node.url) ?? MeetingEvidence.meetCode(in: node.text)
-                    let service = MeetingEvidence.service(url: node.url) ?? (code != nil ? "Google Meet" : nil)
-                    guard let service, code != nil || leave else { continue }
                     if ended && !node.isTab { continue }
                     let matchingTab = node.isTab ? node.element : window.nodes.first(where: { $0.isTab && $0.selected })?.element
                     let existing = known.values.first { entry in
                         entry.pid == app.pid && (code != nil ? entry.code == code : matchingTab.map { tab in entry.tab.map { CFEqual($0, tab) } == true } == true)
                     }
+                    guard let service = MeetingEvidence.service(url: node.url) ?? existing?.meeting.service,
+                          code != nil || leave || existing != nil else { continue }
                     let id = existing?.meeting.id ?? nextID(pid: app.pid)
                     let tab = matchingTab ?? existing?.tab
                     known[id] = Known(meeting: DetectedMeeting(id: id, app: app.name, service: service),
@@ -146,7 +148,7 @@ actor MeetingScanner {
                     return entry.document.map { CFEqual($0, node.element) } == true
                         || (entry.code != nil && MeetingEvidence.meetCode(in: node.url) == entry.code)
                 }
-                if documentPresent && ended && !leave {
+                if endState.isEnded(entry.meeting.id, endScreen: documentPresent && ended && !leave, inCall: documentPresent && leave) {
                     result.observations[entry.meeting.id] = .ended
                 } else if tabPresent || documentPresent {
                     result.observations[entry.meeting.id] = .present(entry.meeting)
@@ -163,7 +165,11 @@ actor MeetingScanner {
             if observation == .ended {
                 if endedSince[id] == nil { endedSince[id] = now }
                 // Longer than the stop countdown; never prune uncertain meetings.
-                if now - (endedSince[id] ?? now) > 120 { known.removeValue(forKey: id); endedSince.removeValue(forKey: id) }
+                if now - (endedSince[id] ?? now) > 120 {
+                    known.removeValue(forKey: id)
+                    endedSince.removeValue(forKey: id)
+                    endState.forget(id)
+                }
             } else { endedSince.removeValue(forKey: id) }
         }
         return result

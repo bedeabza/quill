@@ -2,9 +2,18 @@ import XCTest
 @testable import quill
 
 final class MeetingEvidenceTests: XCTestCase {
+    func testEndedMeetingCannotRestartFromItsBackgroundTab() {
+        var state = MeetingEndState()
+        XCTAssertTrue(state.isEnded("meeting", endScreen: true, inCall: false))
+        XCTAssertTrue(state.isEnded("meeting", endScreen: false, inCall: false))
+        XCTAssertFalse(state.isEnded("meeting", endScreen: false, inCall: true))
+    }
+
     func testOnlyRealMeetingHostsQualify() {
         XCTAssertEqual(MeetingEvidence.service(url: "https://meet.google.com/abc-defg-hij"), "Google Meet")
         XCTAssertNil(MeetingEvidence.service(url: "https://meet.google.com/"))
+        XCTAssertNil(MeetingEvidence.service(url: "https://meet.google.com/?code=abc-defg-hij"))
+        XCTAssertNil(MeetingEvidence.service(url: "file:///private/tmp/Meet-abc-defg-hij.html"))
         XCTAssertNil(MeetingEvidence.service(url: "https://meet.google.com.evil.test/abc-defg-hij"))
         XCTAssertNil(MeetingEvidence.service(url: "https://example.com/?meeting=teams.microsoft.com"))
         XCTAssertEqual(MeetingEvidence.service(url: "https://teams.cloud.microsoft/v2/"), "Microsoft Teams")

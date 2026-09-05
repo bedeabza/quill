@@ -15,20 +15,21 @@ enum MeetingObservation: Equatable, Sendable {
 /// Missing or unreadable observations never authorize stopping audio capture.
 struct MeetingPolicy {
     enum Action: Equatable {
-        case none, prompt(DetectedMeeting), countdown(Int), stop, unavailable
+        case none, start(DetectedMeeting), countdown(Int), stop, unavailable
     }
 
     private(set) var recordingMeeting: DetectedMeeting?
-    private(set) var pendingPrompt: DetectedMeeting?
     private(set) var recording = false
     private(set) var automaticStop = true
+    private var automationEnabled = true
+    private var automaticRecording = false
     private var endedAt: TimeInterval?
     private var dismissed: Set<String> = []
 
     mutating func update(_ observations: [String: MeetingObservation], now: TimeInterval) -> Action {
+        guard automationEnabled else { return .none }
         for (id, observation) in observations where observation == .ended {
             dismissed.remove(id)
-            if pendingPrompt?.id == id { pendingPrompt = nil }
         }
         let present = observations.values.compactMap { observation -> DetectedMeeting? in
             if case .present(let meeting) = observation { return meeting }
@@ -46,39 +47,47 @@ struct MeetingPolicy {
                 endedAt = nil
                 return .unavailable
             case .ended:
+                if let next = present.first {
+                    recordingMeeting = next
+                    endedAt = nil
+                    return .none
+                }
                 if endedAt == nil { endedAt = now }
                 let remaining = max(0, 30 - Int(now - (endedAt ?? now)))
                 return remaining == 0 ? .stop : .countdown(remaining)
             }
         }
-        if let pendingPrompt, observations[pendingPrompt.id] == .present(pendingPrompt) {
-            return .prompt(pendingPrompt)
-        }
-        pendingPrompt = nil
         if let meeting = present.first(where: { !dismissed.contains($0.id) }) {
-            pendingPrompt = meeting
-            return .prompt(meeting)
+            return .start(meeting)
         }
         return .none
     }
 
-    mutating func dismissPrompt() {
-        if let pendingPrompt { dismissed.insert(pendingPrompt.id) }
-        pendingPrompt = nil
+    mutating func startFailed(for meeting: DetectedMeeting) {
+        dismissed.insert(meeting.id)
     }
 
-    mutating func recordingStarted(for meeting: DetectedMeeting?) {
+    mutating func setAutomationEnabled(_ enabled: Bool) -> Action {
+        if enabled && !automationEnabled { dismissed.removeAll() }
+        automationEnabled = enabled
+        automaticStop = enabled
+        endedAt = nil
+        return !enabled && recording && automaticRecording ? .stop : .none
+    }
+
+    mutating func recordingStarted(for meeting: DetectedMeeting?, automatic: Bool = false) {
         recording = true
-        automaticStop = true
+        automaticRecording = automatic
+        automaticStop = automationEnabled
         recordingMeeting = meeting
         if let meeting { dismissed.insert(meeting.id) }
-        pendingPrompt = nil
         endedAt = nil
     }
 
     mutating func recordingStopped() {
         if let recordingMeeting { dismissed.insert(recordingMeeting.id) }
         recording = false
+        automaticRecording = false
         recordingMeeting = nil
         endedAt = nil
     }

@@ -1,5 +1,19 @@
 import Foundation
 
+/// Once a visible meeting has ended, keeping its tab open must not restart
+/// recording when that tab moves into the background.
+struct MeetingEndState {
+    private var ended: Set<String> = []
+
+    mutating func isEnded(_ id: String, endScreen: Bool, inCall: Bool) -> Bool {
+        if inCall { ended.remove(id) }
+        else if endScreen { ended.insert(id) }
+        return ended.contains(id)
+    }
+
+    mutating func forget(_ id: String) { ended.remove(id) }
+}
+
 enum MeetingEvidence {
     static func meetCode(in text: String) -> String? {
         let lower = text.lowercased()
@@ -9,8 +23,8 @@ enum MeetingEvidence {
     }
 
     static func service(url: String) -> String? {
-        guard let host = URL(string: url)?.host?.lowercased() else { return nil }
-        if host == "meet.google.com", meetCode(in: url) != nil { return "Google Meet" }
+        guard let parsed = URL(string: url), let host = parsed.host?.lowercased() else { return nil }
+        if host == "meet.google.com", parsed.path.range(of: "^/[a-z]{3}-[a-z]{4}-[a-z]{3}/?$", options: .regularExpression) != nil { return "Google Meet" }
         if host == "teams.microsoft.com" || host == "teams.live.com" || host == "teams.cloud.microsoft" { return "Microsoft Teams" }
         if host == "zoom.us" || host.hasSuffix(".zoom.us") { return "Zoom" }
         return nil

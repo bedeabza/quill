@@ -10,7 +10,7 @@ final class MenuBarController {
     private let transcriptionLabel: NSMenuItem
     private let toggleItem: NSMenuItem
     private let detectionLabel = NSMenuItem(title: "Meeting detection on", action: nil, keyEquivalent: "")
-    private let detectionToggle = NSMenuItem(title: "Enable meeting detection", action: #selector(detectionClicked), keyEquivalent: "")
+    private let detectionToggle = NSMenuItem(title: "Automatic meeting recording", action: #selector(detectionClicked), keyEquivalent: "")
     private let permissionItem = NSMenuItem(title: "Allow meeting detection...", action: #selector(permissionClicked), keyEquivalent: "")
     private let keepItem = NSMenuItem(title: "Keep recording after meeting ends", action: #selector(keepClicked), keyEquivalent: "")
 

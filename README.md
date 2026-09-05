@@ -96,17 +96,23 @@ Optional, at `~/.config/quill/config.json`:
 
 ## Meeting detection
 
-Quill can prompt before recording a detected meeting and stop 30 seconds after
-the associated meeting tab or call window closes. Use **Allow meeting detection**
-in the menu to grant macOS Accessibility permission. Recording still requires a
-click. The stop countdown offers **Keep recording** and **Stop now**; the menu
-also has **Keep recording after meeting ends** for manual sessions.
+With **Automatic meeting recording** enabled in the menu, Quill starts detected
+meetings automatically and stops 30 seconds after the associated meeting tab or
+call window closes. Brief banners announce recording start and stop, without
+asking for confirmation. Use **Allow meeting detection** to grant macOS
+Accessibility permission. Turning the toggle off stops an automatically started
+recording; manually started recordings remain under manual control. The menu
+also offers **Keep recording after meeting ends**. Manually stopping a recording
+suppresses automatic restart for that meeting until it ends or the toggle is
+turned off and back on.
 
 Detection uses macOS Accessibility, without browser extensions. Brave, Chrome,
 Edge, Safari, Firefox, Arc, and other browsers registered to handle web URLs are
 inspected for exposed meeting tabs. Desktop Teams and Zoom are inspected for
 call controls and their meeting windows. Google Meet, web Teams, and web Zoom
-pages can be recognized when the browser exposes the relevant URL or tab.
+pages can be recognized when the browser exposes the relevant meeting URL.
+Background tab labels maintain a previously identified meeting, but cannot
+start recording by themselves.
 
 Browser/app versions and accessible labels vary. Closed tabs and windows are
 end signals; recognized English-language end screens are also supported. A

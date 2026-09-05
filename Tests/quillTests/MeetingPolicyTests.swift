@@ -4,12 +4,46 @@ import XCTest
 final class MeetingPolicyTests: XCTestCase {
     let meeting = DetectedMeeting(id: "meet-1", app: "Brave", service: "Google Meet")
 
-    func testPromptRequiresClickAndDoesNotRepeatAfterDismissal() {
+    func testDetectedMeetingStartsAutomaticallyOnce() {
         var policy = MeetingPolicy()
-        XCTAssertEqual(policy.update([meeting.id: .present(meeting)], now: 0), .prompt(meeting))
-        XCTAssertNil(policy.recordingMeeting)
-        policy.dismissPrompt()
+        XCTAssertEqual(policy.update([meeting.id: .present(meeting)], now: 0), .start(meeting))
+        policy.recordingStarted(for: meeting, automatic: true)
         XCTAssertEqual(policy.update([meeting.id: .present(meeting)], now: 50), .none)
+    }
+
+    func testFailedStartDoesNotRetryEveryPoll() {
+        var policy = MeetingPolicy()
+        policy.startFailed(for: meeting)
+        XCTAssertEqual(policy.update([meeting.id: .present(meeting)], now: 50), .none)
+    }
+
+    func testReenablingToggleAllowsTheSameMeetingToStartAgain() {
+        var policy = MeetingPolicy()
+        policy.recordingStarted(for: meeting, automatic: true)
+        XCTAssertEqual(policy.setAutomationEnabled(false), .stop)
+        policy.recordingStopped()
+        _ = policy.setAutomationEnabled(true)
+        XCTAssertEqual(policy.update([meeting.id: .present(meeting)], now: 10), .start(meeting))
+    }
+
+    func testToggleOffPreventsAutomaticStartAndStopsOnlyAutomaticRecordings() {
+        var policy = MeetingPolicy()
+        XCTAssertEqual(policy.setAutomationEnabled(false), .none)
+        XCTAssertEqual(policy.update([meeting.id: .present(meeting)], now: 0), .none)
+        _ = policy.setAutomationEnabled(true)
+        policy.recordingStarted(for: meeting, automatic: true)
+        XCTAssertEqual(policy.setAutomationEnabled(false), .stop)
+        policy.recordingStopped()
+        policy.recordingStarted(for: nil)
+        XCTAssertEqual(policy.setAutomationEnabled(false), .none)
+    }
+
+    func testAnotherMeetingKeepsRecordingAfterFirstEnds() {
+        var policy = MeetingPolicy()
+        let other = DetectedMeeting(id: "zoom-1", app: "Zoom", service: "Zoom")
+        policy.recordingStarted(for: meeting, automatic: true)
+        XCTAssertEqual(policy.update([meeting.id: .ended, other.id: .present(other)], now: 100), .none)
+        XCTAssertEqual(policy.recordingMeeting, other)
     }
 
     func testStopsOnlyAfterContinuousConfirmedEnd() {

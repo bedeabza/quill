@@ -11,12 +11,13 @@ final class MeetingAssistant {
     private var timer: Timer?
     private var scanning = false
     private var panel: NSPanel?
-    private var panelLabel: NSTextField?
-    private var panelKind: String?
+    private var bannerTimer: Timer?
+    private var automaticStart: DetectedMeeting?
     private var enabled = Config.meetingDetection()
     private var lastStatus: String?
 
     func start() {
+        _ = policy.setAutomationEnabled(enabled)
         timer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.poll() }
         }
@@ -35,7 +36,7 @@ final class MeetingAssistant {
             return
         }
         enabled.toggle()
-        if !enabled { policy.keepRecording(); closePanel() }
+        if policy.setAutomationEnabled(enabled) == .stop { onStop?() }
         if enabled && !AXIsProcessTrusted() { requestPermission() }
         poll()
     }
@@ -49,13 +50,13 @@ final class MeetingAssistant {
     }
 
     func recordingStarted() {
-        policy.recordingStarted(for: policy.pendingPrompt)
-        closePanel()
+        policy.recordingStarted(for: automaticStart, automatic: automaticStart != nil)
+        showBanner(title: "Recording started", body: automaticStart.map { "\($0.service) in \($0.app)" } ?? "Recording microphone and system audio.")
     }
 
     func recordingStopped() {
         policy.recordingStopped()
-        closePanel()
+        showBanner(title: "Recording stopped", body: "Your recording is being prepared for transcription.")
     }
 
     func keepRecording() {
@@ -87,7 +88,6 @@ final class MeetingAssistant {
             guard self.enabled else { return }
             let action = self.policy.update(scan.observations, now: ProcessInfo.processInfo.systemUptime)
             if scan.needsPermission {
-                self.closePanel()
                 self.report("Meeting detection needs Accessibility permission", true)
                 return
             } else if let meeting = self.policy.recordingMeeting {
@@ -98,66 +98,65 @@ final class MeetingAssistant {
                 self.report("Meeting detection on", true)
             }
             switch action {
-            case .prompt(let meeting):
-                self.showPanel(kind: "start:\(meeting.id)", text: "\(meeting.service) detected in \(meeting.app).\nStart recording this meeting?", primary: "Start recording", secondary: "Not now")
+            case .start(let meeting):
+                self.automaticStart = meeting
+                if self.onStart?() != true { self.policy.startFailed(for: meeting) }
+                self.automaticStart = nil
             case .countdown(let seconds):
-                self.showPanel(kind: "stop", text: "The meeting ended.\nRecording stops in \(seconds) seconds.", primary: "Keep recording", secondary: "Stop now")
+                self.report("Meeting ended; stopping automatically in \(seconds)s", true)
             case .stop:
-                self.closePanel()
                 self.onStop?()
-                notifyUser(title: "Quill recording stopped", body: "The meeting ended. Your recording is being transcribed.")
             case .unavailable:
-                self.closePanel()
                 self.report("Meeting status unavailable; recording continues", true)
             case .none:
-                self.closePanel()
+                break
             }
         }
     }
 
-    private func showPanel(kind: String, text: String, primary: String, secondary: String) {
-        if panelKind == kind { panelLabel?.stringValue = text; return }
+    private func showBanner(title: String, body: String) {
         closePanel()
-        let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 400, height: 156),
-                            styleMask: [.titled, .nonactivatingPanel], backing: .buffered, defer: false)
+        let size = NSSize(width: 370, height: 92)
+        let panel = NSPanel(contentRect: NSRect(origin: .zero, size: size),
+                            styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
         panel.title = "Quill"
         panel.isReleasedWhenClosed = false
+        panel.isOpaque = false
+        panel.backgroundColor = .clear
+        panel.hasShadow = true
         panel.level = .floating
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
-        let label = NSTextField(wrappingLabelWithString: text)
-        label.frame = NSRect(x: 20, y: 62, width: 360, height: 68)
-        label.font = .systemFont(ofSize: 14)
-        panel.contentView?.addSubview(label)
-        let first = NSButton(title: primary, target: self, action: #selector(primaryClicked))
-        first.frame = NSRect(x: 214, y: 16, width: 165, height: 32)
-        first.bezelStyle = .rounded
-        let second = NSButton(title: secondary, target: self, action: #selector(secondaryClicked))
-        second.frame = NSRect(x: 20, y: 16, width: 165, height: 32)
-        second.bezelStyle = .rounded
-        panel.contentView?.addSubview(first)
-        panel.contentView?.addSubview(second)
-        panel.center()
+        let content = NSVisualEffectView(frame: NSRect(origin: .zero, size: size))
+        content.material = .hudWindow
+        content.state = .active
+        content.wantsLayer = true
+        content.layer?.cornerRadius = 14
+        content.layer?.masksToBounds = true
+        let heading = NSTextField(labelWithString: "Quill: " + title)
+        heading.font = .boldSystemFont(ofSize: 14)
+        heading.frame = NSRect(x: 18, y: 57, width: 334, height: 20)
+        let detail = NSTextField(wrappingLabelWithString: body)
+        detail.font = .systemFont(ofSize: 12)
+        detail.frame = NSRect(x: 18, y: 14, width: 334, height: 36)
+        content.addSubview(heading)
+        content.addSubview(detail)
+        panel.contentView = content
+        if let screen = NSScreen.main ?? NSScreen.screens.first {
+            let frame = screen.visibleFrame
+            panel.setFrameOrigin(NSPoint(x: frame.maxX - size.width - 16, y: frame.maxY - size.height - 12))
+        }
         panel.orderFrontRegardless()
-        FileHandle.standardError.write(Data("meeting detection: \(kind == "stop" ? "stop countdown" : "start prompt") shown\n".utf8))
+        FileHandle.standardError.write(Data("meeting detection: \(title.lowercased()) banner shown\n".utf8))
         self.panel = panel
-        panelLabel = label
-        panelKind = kind
+        bannerTimer = Timer.scheduledTimer(withTimeInterval: 6, repeats: false) { [weak self] _ in
+            MainActor.assumeIsolated { self?.closePanel() }
+        }
     }
 
     private func closePanel() {
+        bannerTimer?.invalidate()
+        bannerTimer = nil
         panel?.close()
         panel = nil
-        panelLabel = nil
-        panelKind = nil
-    }
-
-    @objc private func primaryClicked() {
-        if panelKind == "stop" { keepRecording() }
-        else if onStart?() != true { policy.dismissPrompt(); closePanel() }
-    }
-
-    @objc private func secondaryClicked() {
-        if panelKind == "stop" { onStop?() }
-        else { policy.dismissPrompt(); closePanel() }
     }
 }
