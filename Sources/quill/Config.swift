@@ -14,6 +14,24 @@ import Foundation
 /// directory as its argument — after the transcript is written, or right
 /// after recording when transcription is disabled.
 enum Config {
+    static func meetingDetection() -> Bool { load()?["meeting_detection"] as? Bool ?? true }
+
+    @discardableResult static func setMeetingDetection(_ enabled: Bool) -> Bool {
+        let existing = load()
+        guard existing != nil || !FileManager.default.fileExists(atPath: path.path) else { return false }
+        var config = existing ?? [:]
+        config["meeting_detection"] = enabled
+        do {
+            try FileManager.default.createDirectory(at: path.deletingLastPathComponent(), withIntermediateDirectories: true)
+            let data = try JSONSerialization.data(withJSONObject: config, options: [.prettyPrinted, .sortedKeys])
+            try data.write(to: path, options: .atomic)
+            return true
+        } catch {
+            FileHandle.standardError.write(Data("Could not save meeting detection setting: \(error)\n".utf8))
+            return false
+        }
+    }
+
     static let path = FileManager.default.homeDirectoryForCurrentUser
         .appendingPathComponent(".config/quill/config.json")
 

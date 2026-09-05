@@ -9,10 +9,17 @@ final class MenuBarController {
     private let stateLabel: NSMenuItem
     private let transcriptionLabel: NSMenuItem
     private let toggleItem: NSMenuItem
+    private let detectionLabel = NSMenuItem(title: "Meeting detection on", action: nil, keyEquivalent: "")
+    private let detectionToggle = NSMenuItem(title: "Enable meeting detection", action: #selector(detectionClicked), keyEquivalent: "")
+    private let permissionItem = NSMenuItem(title: "Allow meeting detection...", action: #selector(permissionClicked), keyEquivalent: "")
+    private let keepItem = NSMenuItem(title: "Keep recording after meeting ends", action: #selector(keepClicked), keyEquivalent: "")
 
     var onToggle: (() -> Void)?
     var onOpenFolder: (() -> Void)?
     var onQuit: (() -> Void)?
+    var onDetectionToggle: (() -> Void)?
+    var onPermission: (() -> Void)?
+    var onKeepRecording: (() -> Void)?
 
     init() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -37,6 +44,12 @@ final class MenuBarController {
             keyEquivalent: "r"
         )
         menu.addItem(toggleItem)
+        detectionLabel.isEnabled = false
+        menu.addItem(keepItem)
+        menu.addItem(.separator())
+        menu.addItem(detectionLabel)
+        menu.addItem(detectionToggle)
+        menu.addItem(permissionItem)
 
         let openFolder = NSMenuItem(
             title: "Open recordings folder",
@@ -54,7 +67,7 @@ final class MenuBarController {
         )
         menu.addItem(quit)
 
-        for item in [toggleItem, openFolder, quit] {
+        for item in [toggleItem, openFolder, quit, detectionToggle, permissionItem, keepItem] {
             item.target = self
         }
 
@@ -75,6 +88,7 @@ final class MenuBarController {
     func update(recording: Bool, elapsed: String?) {
         stateLabel.title = recording ? "● recording · \(elapsed ?? "0:00")" : "idle"
         toggleItem.title = recording ? "Stop recording" : "Start recording"
+        keepItem.isHidden = !recording
         statusItem.button?.contentTintColor = recording ? .systemRed : nil
     }
 
@@ -85,6 +99,16 @@ final class MenuBarController {
         transcriptionLabel.title = text ?? ""
         transcriptionLabel.isHidden = text == nil
     }
+
+    func updateDetection(_ text: String, enabled: Bool) {
+        detectionLabel.title = text
+        detectionToggle.state = enabled ? .on : .off
+        permissionItem.isHidden = !text.contains("permission")
+    }
+
+    @objc private func detectionClicked() { onDetectionToggle?() }
+    @objc private func permissionClicked() { onPermission?() }
+    @objc private func keepClicked() { onKeepRecording?() }
 
     // Inlined Lucide feather SVG. Keeping it in source means the executable
     // has no separate resource bundle to install alongside it — true

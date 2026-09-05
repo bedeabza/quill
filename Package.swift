@@ -9,6 +9,7 @@ let package = Package(
         .package(url: "https://github.com/FluidInference/FluidAudio.git", from: "0.7.0"),
     ],
     targets: [
+        .testTarget(name: "quillTests", dependencies: ["quill"]),
         .executableTarget(
             name: "quill",
             dependencies: [

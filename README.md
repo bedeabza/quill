@@ -94,6 +94,35 @@ Optional, at `~/.config/quill/config.json`:
   transcription is disabled). Wire it to whatever comes next: summarization,
   filing, indexing.
 
+## Meeting detection
+
+Quill can prompt before recording a detected meeting and stop 30 seconds after
+the associated meeting tab or call window closes. Use **Allow meeting detection**
+in the menu to grant macOS Accessibility permission. Recording still requires a
+click. The stop countdown offers **Keep recording** and **Stop now**; the menu
+also has **Keep recording after meeting ends** for manual sessions.
+
+Detection uses macOS Accessibility, without browser extensions. Brave, Chrome,
+Edge, Safari, Firefox, Arc, and other browsers registered to handle web URLs are
+inspected for exposed meeting tabs. Desktop Teams and Zoom are inspected for
+call controls and their meeting windows. Google Meet, web Teams, and web Zoom
+pages can be recognized when the browser exposes the relevant URL or tab.
+
+Browser/app versions and accessible labels vary. Closed tabs and windows are
+end signals; recognized English-language end screens are also supported. A
+hidden control, mute, silence, switching tabs, or a failed Accessibility read
+does not authorize stopping. If a browser hides its tab information, or an app
+keeps the window open without an identifiable end screen, Quill continues
+recording and reports that meeting status is unavailable. Manual stopping stays
+available. Calls in other UI languages need matching accessible labels.
+
+The feature is on by default and can be disabled in the menu or with
+`"meeting_detection": false` in the existing configuration file. Recordings,
+transcription, and `on_stop` archive hooks retain their normal behavior.
+
+For read-only diagnostics, use `quill meetings` or `quill meetings --watch`.
+The output lists app/service and detection state, without meeting content.
+
 ## CLI
 
 ```sh

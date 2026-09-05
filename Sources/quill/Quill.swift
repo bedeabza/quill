@@ -7,9 +7,50 @@ struct Quill: ParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "quill",
         abstract: "Local meeting recorder + transcriber. Records mic and system audio as two tracks, then transcribes on-device.",
-        subcommands: [Run.self, Doctor.self, Install.self],
+        subcommands: [Run.self, Doctor.self, Install.self, Meetings.self],
         defaultSubcommand: Run.self
     )
+}
+
+struct Meetings: ParsableCommand {
+    static let configuration = CommandConfiguration(abstract: "Inspect meeting detection without starting a recording.")
+
+    @Flag(help: "Continuously print detection changes until interrupted.")
+    var watch = false
+
+    func run() throws {
+        let watch = self.watch
+        Task { @MainActor in
+            do { try await Self.inspect(watch: watch) }
+            catch {
+                FileHandle.standardError.write(Data("Meeting inspection failed: \(error)\n".utf8))
+                Darwin.exit(1)
+            }
+            Darwin.exit(0)
+        }
+        dispatchMain()
+    }
+
+    @MainActor private static func inspect(watch: Bool) async throws {
+        let scanner = MeetingScanner()
+        repeat {
+            let apps = MeetingApp.running()
+            let scan = await scanner.scan(apps: apps)
+            var rows: [[String: String]] = []
+            for (id, observation) in scan.observations.sorted(by: { $0.key < $1.key }) {
+                switch observation {
+                case .present(let meeting): rows.append(["id": id, "state": "present", "app": meeting.app, "service": meeting.service])
+                case .ended: rows.append(["id": id, "state": "ended"])
+                case .unknown: rows.append(["id": id, "state": "unknown"])
+                }
+            }
+            let output: [String: Any] = ["needs_accessibility_permission": scan.needsPermission,
+                                         "apps": apps.map(\.name), "meetings": rows]
+            let data = try JSONSerialization.data(withJSONObject: output, options: [.sortedKeys])
+            FileHandle.standardOutput.write(data + Data("\n".utf8))
+            if watch { try await Task.sleep(for: .seconds(2)) }
+        } while watch
+    }
 }
 
 struct Run: ParsableCommand {
@@ -22,8 +63,6 @@ struct Run: ParsableCommand {
     var out: String?
 
     func run() throws {
-        // ArgumentParser invokes run() on the main thread; promote that fact
-        // to the type system so AppKit calls are cleanly isolated.
         try MainActor.assumeIsolated { try runMain() }
     }
 
@@ -81,6 +120,7 @@ final class AppController {
     private let root: URL
     private let menuBar = MenuBarController()
     private let transcription = TranscriptionCoordinator()
+    private let meetings = MeetingAssistant()
     private var session: RecordingSession?
     private var ticker: Timer?
 
@@ -90,6 +130,16 @@ final class AppController {
         menuBar.onOpenFolder = { [weak self] in self?.openFolder() }
         menuBar.onQuit = { [weak self] in self?.shutdown() }
         menuBar.update(recording: false, elapsed: nil)
+        menuBar.onDetectionToggle = { [weak self] in self?.meetings.toggleEnabled() }
+        menuBar.onPermission = { [weak self] in self?.meetings.requestPermission() }
+        menuBar.onKeepRecording = { [weak self] in self?.meetings.keepRecording() }
+        meetings.onStart = { [weak self] in
+            guard let self, self.session == nil else { return false }
+            return self.startSession()
+        }
+        meetings.onStop = { [weak self] in self?.stopSession() }
+        meetings.onStatus = { [weak self] text, enabled in self?.menuBar.updateDetection(text, enabled: enabled) }
+        meetings.start()
 
         Task { [transcription, root] in
             await transcription.setStatusHandler { status in
@@ -103,6 +153,7 @@ final class AppController {
 
     /// Stop any live session cleanly (finalizing files) and exit.
     func shutdown() {
+        meetings.shutdown()
         stopSession()
         NSApp.terminate(nil)
     }
@@ -115,7 +166,7 @@ final class AppController {
         }
     }
 
-    private func startSession() {
+    @discardableResult private func startSession() -> Bool {
         do {
             let newSession = try RecordingSession(root: root)
             try newSession.start()
@@ -124,13 +175,15 @@ final class AppController {
         } catch {
             FileHandle.standardError.write(Data("recording start failed: \(error)\n".utf8))
             notifyUser(title: "quill — recording failed", body: "\(error)")
-            return
+            return false
         }
 
         menuBar.update(recording: true, elapsed: "0:00")
         ticker = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.tick() }
         }
+        meetings.recordingStarted()
+        return true
     }
 
     private func stopSession() {
@@ -141,6 +194,7 @@ final class AppController {
             "○ stopped · \(elapsed) · \(session.dir.path)\n".utf8
         ))
         self.session = nil
+        meetings.recordingStopped()
         ticker?.invalidate()
         ticker = nil
         menuBar.update(recording: false, elapsed: nil)
