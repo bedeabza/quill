@@ -87,12 +87,19 @@ written is still readable.
 
 ## Transcription
 
-Built in, on-device, automatic. The default engine is **Parakeet TDT 0.6B v2**
-(English) via [FluidAudio](https://github.com/FluidInference/FluidAudio)'s
-Core ML port — roughly 20 seconds per hour of audio on Apple Silicon. Models
-(~600 MB) download once on first transcription; `quill doctor` tells you
-whether they're already cached so you're never downloading after an important
-meeting.
+Built in, on-device, automatic. The default engine is **Parakeet TDT 0.6B v3**
+via [FluidAudio](https://github.com/FluidInference/FluidAudio)'s Core ML port.
+It automatically detects and transcribes **English and Romanian** in their
+original language, without changing settings between meetings. The
+[model supports 25 European languages](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3).
+Audio stays on your Mac.
+
+The multilingual models download once on first transcription; `quill doctor`
+checks the v3 cache specifically. Upgrading from the English-only v2 engine
+requires a new model download, even if the old models are cached. Existing
+`"engine": "parakeet"` configurations automatically use v3. Completed
+transcripts are left as they are; this change applies to pending and future
+transcriptions.
 
 Each track is transcribed separately, shifted by its start offset so both
 share one clock, and merged by timestamp. Jobs run in a serial queue — you can
@@ -100,6 +107,12 @@ start a new recording while the last one transcribes. Unfinished jobs resume
 on next launch (the filesystem is the queue: a session with `meta.json` but no
 `transcript.json` is pending). Failures append to the session's
 `transcribe.log` and never block later jobs.
+
+To run the on-device English/Romanian regression after the v3 models are
+cached, use `sh tools/test-transcription.sh`. It synthesizes disposable speech
+with macOS's Samantha and Ioana voices and checks English, Romanian (including
+diacritics), and switching back to English on the same engine. The regular
+`swift test` suite skips this model-dependent test.
 
 The engine sits behind a small protocol; a Whisper engine (WhisperKit
 large-v3-turbo) is planned as the fallback / re-transcription option.
