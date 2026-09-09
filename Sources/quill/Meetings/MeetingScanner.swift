@@ -44,6 +44,8 @@ struct MeetingScan: Sendable {
     var speakerCaptureStatus: [String: String] = [:]
     var speakerBoxes: [String: [[String: String]]] = [:]
     var observedAt = Date().timeIntervalSince1970
+    var needsZoomScreenPermission = false
+    var speakerNameWarnings: [String: String] = [:]
 }
 
 /// Accessibility objects stay on this actor. Only value snapshots reach UI code.
@@ -66,6 +68,8 @@ actor MeetingScanner {
         let activeSpeaker: String?
         let parentIndex: Int?
         let classNames: [String]
+        let subrole: String
+        let roleDescription: String
     }
     private struct Window {
         let element: AXUIElement
@@ -83,13 +87,29 @@ actor MeetingScanner {
         let nameElement: AXUIElement
         let name: String
         let isLocal: Bool
+        let kind: SpeakerUITileKind
     }
     private var tiles: [String: [CachedTile]] = [:]
+    private var zoomVideos: [String: [AXUIElement]] = [:]
+    private let zoomDetector = ZoomWindowSpeakerDetector()
+    private var zoomScores: [String: [String: Double]] = [:]
+
+    func zoomBorderScores() -> [String: [String: Double]] { zoomScores }
+    func zoomCaptureStatus() async -> String { await zoomDetector.diagnostic }
 
     /// Fast path while recording: read only cached tile indicators and names,
     /// rather than walking every browser window four times per second.
-    func speakerActivity(for meetingID: String) -> SpeakerObservation? {
-        guard AXIsProcessTrusted(), let entry = known[meetingID], !bool(entry.window, kAXMinimizedAttribute),
+    func speakerActivity(for meetingID: String) async -> SpeakerObservation? {
+        guard AXIsProcessTrusted(), let entry = known[meetingID], !bool(entry.window, kAXMinimizedAttribute) else { return nil }
+        if entry.meeting.service == "Zoom", let controls = zoomVideos[meetingID], !controls.isEmpty {
+            zoomScores.removeValue(forKey: meetingID)
+            guard let windowFrame = frame(entry.window), let before = zoomSnapshots(controls) else { return nil }
+            guard let sample = await zoomDetector.sample(meetingID: meetingID, pid: entry.pid, frame: windowFrame, videos: before),
+                  frame(entry.window) == windowFrame, zoomSnapshots(controls) == before else { return nil }
+            zoomScores[meetingID] = sample.scores
+            return SpeakerObservation(observed_at: sample.observedAt, meeting_id: meetingID, names: sample.names, source: "zoom_border")
+        }
+        guard
               let cached = tiles[meetingID], !cached.isEmpty else { return nil }
         if let tab = entry.tab, !bool(tab, kAXValueAttribute) && !bool(tab, kAXSelectedAttribute) { return nil }
         let started = Date().timeIntervalSince1970
@@ -97,8 +117,8 @@ actor MeetingScanner {
         for tile in cached {
             guard !isDestroyed(tile.indicator), SpeakerAttribution.cleanName(string(tile.nameElement, kAXValueAttribute)) == tile.name else { return nil }
             let classes = Set(strings(tile.indicator, "AXDOMClassList"))
-            guard classes.isSuperset(of: ["lH9pqf", "atLQQ"]) else { return nil }
-            if !tile.isLocal && MeetTileEvidence.isSpeaking(classes: classes) { names.append(tile.name) }
+            guard tile.kind.recognizes(classes) else { return nil }
+            if !tile.isLocal && tile.kind.isSpeaking(classes) { names.append(tile.name) }
         }
         let ended = Date().timeIntervalSince1970
         guard ended - started <= 0.2 else { return nil }
@@ -130,7 +150,7 @@ actor MeetingScanner {
             let windows = elements.map { readWindow($0, browser: app.service == nil) }
 
             for window in windows {
-                let leave = hasCallControls(window)
+                let leave = hasCallControls(window, service: app.service)
                 let ended = window.nodes.contains { MeetingEvidence.isEndMessage($0.text) }
                 if let service = app.service {
                     if leave && !ended {
@@ -165,18 +185,18 @@ actor MeetingScanner {
                 guard let window = windows.first(where: { CFEqual($0.element, entry.window) }) else {
                     // A closed call window is a positive end signal. If another native
                     // call window appeared, keep recording through layout transitions.
-                    let anotherCall = app.service != nil && windows.contains(where: hasCallControls)
+                    let anotherCall = app.service != nil && windows.contains { hasCallControls($0, service: app.service) }
                     result.observations[entry.meeting.id] = anotherCall ? .present(entry.meeting) : .ended
                     continue
                 }
-                let leave = hasCallControls(window)
+                let leave = hasCallControls(window, service: app.service)
                 let ended = window.nodes.contains { MeetingEvidence.isEndMessage($0.text) }
                 if captureSpeakers && !ended && !bool(entry.window, kAXMinimizedAttribute) {
                     // Browser windows may contain several calls. Read only the
                     // established meeting document, never names from another tab.
                     let nodes: [Node]
                     let captureStarted = Date().timeIntervalSince1970
-                    if app.service != nil { nodes = readTree(entry.window, skipWebContent: false).nodes }
+                    if app.service != nil { nodes = readTree(entry.window, skipWebContent: false, readClasses: true).nodes }
                     else if let document = entry.document, !isDestroyed(document),
                             window.nodes.contains(where: { $0.role == "AXWebArea" && CFEqual($0.element, document) }),
                             entry.tab.map({ tab in window.nodes.contains(where: { $0.isTab && $0.selected && CFEqual($0.element, tab) }) }) ?? true {
@@ -187,28 +207,66 @@ actor MeetingScanner {
                     result.speakers[entry.meeting.id] = captureEnded - captureStarted <= 0.8
                         ? Array(Set(nodes.compactMap(\.activeSpeaker))).sorted() : []
                     result.speakerObservedAt[entry.meeting.id] = (captureStarted + captureEnded) / 2
-                    if entry.meeting.service == "Google Meet" {
-                        let tileNodes = nodes.map { MeetTileNode(parent: $0.parentIndex, role: $0.role, text: $0.text, classes: Set($0.classNames)) }
-                        tiles[entry.meeting.id] = MeetTileEvidence.tiles(tileNodes).map {
-                            CachedTile(indicator: nodes[$0.indicatorIndex].element, nameElement: nodes[$0.nameIndex].element,
-                                       name: $0.name, isLocal: $0.isLocal)
-                        }
-                        result.speakerCaptureStatus[entry.meeting.id, default: ""] += "; \(tiles[entry.meeting.id]?.count ?? 0) speaker tiles"
-                        if inspectBoxes {
-                            result.speakerBoxes[entry.meeting.id] = nodes.prefix(700).enumerated().map { index, node in
-                                var value: CFTypeRef?
-                                AXUIElementCopyAttributeValue(node.element, "AXDOMClassList" as CFString, &value)
-                                var row = ["index": String(index), "parent": node.parentIndex.map(String.init) ?? "", "role": node.role, "text": String(node.text.prefix(160)),
-                                           "classes": (value as? [String] ?? []).joined(separator: " ")]
-                                var sizeValue: CFTypeRef?
-                                if AXUIElementCopyAttributeValue(node.element, kAXSizeAttribute as CFString, &sizeValue) == .success,
-                                   let sizeValue, CFGetTypeID(sizeValue) == AXValueGetTypeID() {
-                                    var size = CGSize.zero
-                                    if AXValueGetValue(sizeValue as! AXValue, .cgSize, &size) { row["size"] = "\(size.width),\(size.height)" }
+                    if inspectBoxes {
+                        result.speakerBoxes[entry.meeting.id] = nodes.prefix(700).enumerated().map { index, node in
+                            var value: CFTypeRef?
+                            AXUIElementCopyAttributeValue(node.element, "AXDOMClassList" as CFString, &value)
+                            var row: [String: String] = ["index": String(index), "parent": node.parentIndex.map(String.init) ?? "", "role": node.role, "text": String(node.text.prefix(160)),
+                                                        "classes": (value as? [String] ?? []).joined(separator: " ")]
+                            row["identifier"] = string(node.element, "AXIdentifier")
+                            row["help"] = String(string(node.element, kAXHelpAttribute).prefix(200))
+                            row["description"] = String(string(node.element, kAXDescriptionAttribute).prefix(200))
+                            row["value"] = String(string(node.element, kAXValueAttribute).prefix(200))
+                            row["subrole"] = string(node.element, kAXSubroleAttribute)
+                            row["role_description"] = string(node.element, kAXRoleDescriptionAttribute)
+                            row["title"] = String(string(node.element, kAXTitleAttribute).prefix(200))
+                            if row["role_description"] == "Video render" {
+                                var attributes: CFArray?
+                                if AXUIElementCopyAttributeNames(node.element, &attributes) == .success {
+                                    row["attribute_names"] = (attributes as? [String] ?? []).joined(separator: " ")
                                 }
-                                return row
+                                for attribute in ["AXSelected", "AXFocused", "AXValue", "AXExpanded", "AXEnabled", "AXCustomContent"] {
+                                    var raw: CFTypeRef?
+                                    if AXUIElementCopyAttributeValue(node.element, attribute as CFString, &raw) == .success, let raw {
+                                        if let number = raw as? NSNumber { row[attribute] = number.stringValue }
+                                        else if let text = raw as? String { row[attribute] = String(text.prefix(300)) }
+                                    }
+                                }
                             }
+                            var sizeValue: CFTypeRef?
+                            if AXUIElementCopyAttributeValue(node.element, kAXSizeAttribute as CFString, &sizeValue) == .success,
+                               let sizeValue, CFGetTypeID(sizeValue) == AXValueGetTypeID() {
+                                var size = CGSize.zero
+                                if AXValueGetValue(sizeValue as! AXValue, .cgSize, &size) { row["size"] = "\(size.width),\(size.height)" }
+                            }
+                            return row
                         }
+                    }
+                    let tileNodes = nodes.map { SpeakerUINode(parent: $0.parentIndex, role: $0.role, text: $0.text, classes: Set($0.classNames), subrole: $0.subrole) }
+                    let detectedTiles: [SpeakerUITile]
+                    switch entry.meeting.service {
+                    case "Google Meet": detectedTiles = MeetTileEvidence.tiles(tileNodes)
+                    case "Microsoft Teams": detectedTiles = TeamsTileEvidence.tiles(tileNodes)
+                    default: detectedTiles = []
+                    }
+                    tiles[entry.meeting.id] = detectedTiles.map {
+                            CachedTile(indicator: nodes[$0.indicatorIndex].element, nameElement: nodes[$0.nameIndex].element,
+                                       name: $0.name, isLocal: $0.isLocal, kind: $0.kind)
+                    }
+                    result.speakerCaptureStatus[entry.meeting.id, default: ""] += "; \(detectedTiles.count) speaker tiles"
+                    if entry.meeting.service == "Zoom" {
+                        let videos = nodes.filter { $0.role == "AXTabGroup" && $0.roleDescription == "video render" }.map(\.element)
+                        zoomVideos[entry.meeting.id] = videos
+                        result.speakerCaptureStatus[entry.meeting.id] = "\(videos.count) native Zoom video tiles"
+                        if !videos.isEmpty && Config.zoomVisualSpeakerDetection() && !ZoomWindowSpeakerDetector.hasPermission {
+                            result.needsZoomScreenPermission = true
+                            result.speakerCaptureStatus[entry.meeting.id] = "Zoom speaker names need Screen Recording permission"
+                            result.speakerNameWarnings[entry.meeting.id] = "Zoom speaker names need Screen Recording permission"
+                        } else if Config.zoomVisualSpeakerDetection(), let snapshot = zoomSnapshots(videos), !snapshot.contains(where: \.isLocal) {
+                            result.speakerNameWarnings[entry.meeting.id] = "Zoom names unavailable: show your tile and match your Zoom display name"
+                        }
+                    }
+                    if entry.meeting.service == "Google Meet" {
                         if nodes.contains(where: { $0.text == "Captions" }) {
                             captionRequests.insert(entry.meeting.id)
                         }
@@ -262,6 +320,8 @@ actor MeetingScanner {
         for (id, observation) in result.observations {
             if observation == .ended {
                 tiles.removeValue(forKey: id)
+                zoomVideos.removeValue(forKey: id)
+                zoomScores.removeValue(forKey: id)
                 if endedSince[id] == nil { endedSince[id] = now }
                 // Longer than the stop countdown; never prune uncertain meetings.
                 if now - (endedSince[id] ?? now) > 120 {
@@ -276,8 +336,11 @@ actor MeetingScanner {
         return result
     }
 
-    private func hasCallControls(_ window: Window) -> Bool {
-        MeetingEvidence.hasCallControls(window.nodes.filter { $0.role == kAXButtonRole }.map(\.text))
+    private func hasCallControls(_ window: Window, service: String? = nil) -> Bool {
+        if MeetingEvidence.hasCallControls(window.nodes.filter { $0.role == kAXButtonRole }.map(\.text)) { return true }
+        guard service == "Zoom" else { return false }
+        let labels = window.nodes.filter { $0.role == "AXTabGroup" && $0.roleDescription == "video render" }.map(\.text)
+        return MeetingEvidence.isZoomConferenceWindow(title: string(window.element, kAXTitleAttribute), videoLabels: labels)
     }
 
     private func nextID(pid: pid_t) -> String {
@@ -323,7 +386,8 @@ actor MeetingScanner {
             let activeSpeaker = SpeakerEvidence.activeName(label: description, role: role)
                 ?? SpeakerEvidence.activeName(label: title, role: role)
             nodes.append(Node(element: element, role: role, text: text, url: url, isTab: isTab, selected: selected, activeSpeaker: activeSpeaker,
-                              parentIndex: parentIndex, classNames: readClasses ? strings(element, "AXDOMClassList") : []))
+                              parentIndex: parentIndex, classNames: readClasses ? strings(element, "AXDOMClassList") : [],
+                              subrole: string(element, kAXSubroleAttribute), roleDescription: roleDescription))
             if skipWebContent && role == "AXWebArea" { continue }
             if let childElements = children(element, attribute: kAXChildrenAttribute) {
                 queue.append(contentsOf: childElements.reversed().map { ($0, nodes.count - 1) })
@@ -343,6 +407,29 @@ actor MeetingScanner {
         var value: CFTypeRef?
         guard AXUIElementCopyAttributeValue(element, attribute as CFString, &value) == .success else { return [] }
         return value as? [String] ?? []
+    }
+
+    private func frame(_ element: AXUIElement) -> CGRect? {
+        var positionValue: CFTypeRef?, sizeValue: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, kAXPositionAttribute as CFString, &positionValue) == .success,
+              AXUIElementCopyAttributeValue(element, kAXSizeAttribute as CFString, &sizeValue) == .success,
+              let positionValue, let sizeValue,
+              CFGetTypeID(positionValue) == AXValueGetTypeID(), CFGetTypeID(sizeValue) == AXValueGetTypeID() else { return nil }
+        var point = CGPoint.zero, size = CGSize.zero
+        guard AXValueGetValue(positionValue as! AXValue, .cgPoint, &point),
+              AXValueGetValue(sizeValue as! AXValue, .cgSize, &size) else { return nil }
+        return CGRect(origin: point, size: size)
+    }
+
+    private func zoomSnapshots(_ controls: [AXUIElement]) -> [ZoomVideoSnapshot]? {
+        let localName = Config.zoomLocalSpeakerName()
+        var snapshots: [ZoomVideoSnapshot] = []
+        for control in controls {
+            guard !isDestroyed(control), let rect = frame(control),
+                  let video = ZoomSpeakerEvidence.participant(description: string(control, kAXDescriptionAttribute), frame: rect, localName: localName) else { return nil }
+            snapshots.append(video)
+        }
+        return snapshots
     }
 
     private func bool(_ element: AXUIElement, _ attribute: String) -> Bool {

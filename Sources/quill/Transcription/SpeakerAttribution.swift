@@ -86,10 +86,11 @@ enum SpeakerAttribution {
     /// Tile state is independent of caption language. Keep short, observed
     /// runs only; unknown/multiple speakers and missing samples end the run.
     static func tileSpans(observations: [SpeakerObservation], audioStartedAt: Double) -> [NamedSpeakerSpan] {
-        let samples = observations.filter { $0.source == "meeting_tile" }.sorted { $0.observed_at < $1.observed_at }
+        let samples = observations.filter { ["meeting_tile", "zoom_border"].contains($0.source) }.sorted { $0.observed_at < $1.observed_at }
         var result: [NamedSpeakerSpan] = []
         var name: String?
         var meetingID: String?
+        var source = "meeting_tile"
         var first = 0.0, last = 0.0
         var count = 0
         func flush() {
@@ -97,15 +98,16 @@ enum SpeakerAttribution {
                 let start = max(0, first - audioStartedAt - 0.125), end = last - audioStartedAt + 0.125
                 guard end > start else { return }
                 result.append(NamedSpeakerSpan(start: start, end: end,
-                    identity: SpeakerIdentity(name: name, source: "meeting_tile", evidence_count: count)))
+                    identity: SpeakerIdentity(name: name, source: source, evidence_count: count)))
             }
         }
         for sample in samples {
             let current = sample.names.count == 1 ? cleanName(sample.names.first) : nil
-            if current != name || sample.meeting_id != meetingID || sample.observed_at - last > 0.75 {
+            if current != name || sample.meeting_id != meetingID || sample.source != source || sample.observed_at - last > 0.75 {
                 flush()
                 name = current
                 meetingID = sample.meeting_id
+                source = sample.source
                 first = sample.observed_at
                 count = 0
             }
@@ -166,7 +168,7 @@ enum SpeakerAttribution {
 
     private static func identity(start: Double, end: Double, spans: [NamedSpeakerSpan]) -> SpeakerIdentity? {
         let overlapping = spans.filter { min(end, $0.end) - max(start, $0.start) >= (end - start) * 0.6 }
-        let exact = overlapping.filter { ["meeting_caption", "meeting_tile"].contains($0.identity.source) }
+        let exact = overlapping.filter { ["meeting_caption", "meeting_tile", "zoom_border"].contains($0.identity.source) }
         let candidates = exact.isEmpty ? overlapping : exact
         guard end > start, Set(candidates.map { $0.identity.name }).count == 1 else { return nil }
         return candidates.first?.identity

@@ -15,6 +15,12 @@ struct MeetingEndState {
 }
 
 enum MeetingEvidence {
+    static func isZoomConferenceWindow(title: String, videoLabels: [String]) -> Bool {
+        title == "Zoom Meeting" && videoLabels.contains {
+            $0.range(of: #", (?:Computer|Phone) audio (?:unmuted|muted)(?:,|$)"#, options: .regularExpression) != nil
+        }
+    }
+
     static func meetCode(in text: String) -> String? {
         let lower = text.lowercased()
         guard lower.contains("meet") else { return nil }

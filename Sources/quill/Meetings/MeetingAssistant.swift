@@ -18,6 +18,7 @@ final class MeetingAssistant {
     private var automaticStart: DetectedMeeting?
     private var enabled = Config.meetingDetection()
     private var lastStatus: String?
+    private var needsZoomScreenPermission = false
 
     init(recordingNotification: @escaping (String, String) -> Void = notifyUser) {
         self.recordingNotification = recordingNotification
@@ -53,6 +54,13 @@ final class MeetingAssistant {
     }
 
     func requestPermission() {
+        if AXIsProcessTrusted() && needsZoomScreenPermission {
+            _ = CGRequestScreenCaptureAccess()
+            if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture") {
+                NSWorkspace.shared.open(url)
+            }
+            return
+        }
         let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true]
         _ = AXIsProcessTrustedWithOptions(options as CFDictionary)
         if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
@@ -102,6 +110,7 @@ final class MeetingAssistant {
             self.scanning = false
             guard self.enabled else { return }
             let action = self.policy.update(scan.observations, now: ProcessInfo.processInfo.systemUptime)
+            self.needsZoomScreenPermission = scan.needsZoomScreenPermission && self.policy.recordingMeeting?.service == "Zoom"
             if let meeting = self.policy.recordingMeeting, let names = scan.speakers[meeting.id] {
                 self.onSpeakers?(SpeakerObservation(observed_at: scan.speakerObservedAt[meeting.id] ?? scan.observedAt,
                                                     meeting_id: meeting.id, names: names))
@@ -113,7 +122,7 @@ final class MeetingAssistant {
                 self.report("Meeting detection needs Accessibility permission", true)
                 return
             } else if let meeting = self.policy.recordingMeeting {
-                self.report("Watching \(meeting.service) in \(meeting.app)", true)
+                self.report(scan.speakerNameWarnings[meeting.id] ?? "Watching \(meeting.service) in \(meeting.app)", true)
             } else if self.policy.recording {
                 self.report(self.policy.automaticStop ? "No meeting linked; stop recording manually" : "Automatic stop off for this recording", true)
             } else {

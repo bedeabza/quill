@@ -104,6 +104,7 @@ final class MenuBarController {
         detectionLabel.title = text
         detectionToggle.state = enabled ? .on : .off
         permissionItem.isHidden = !text.contains("permission")
+        permissionItem.title = text.contains("Screen Recording") ? "Allow Zoom speaker names..." : "Allow meeting detection..."
     }
 
     @objc private func detectionClicked() { onDetectionToggle?() }

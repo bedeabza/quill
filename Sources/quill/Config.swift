@@ -15,6 +15,10 @@ import Foundation
 /// after recording when transcription is disabled.
 enum Config {
     static func speakerDetection() -> Bool { load()?["speaker_detection"] as? Bool ?? true }
+    static func zoomVisualSpeakerDetection() -> Bool { load()?["zoom_visual_speaker_detection"] as? Bool ?? true }
+    static func zoomLocalSpeakerName() -> String? {
+        SpeakerAttribution.cleanName(load()?["zoom_local_speaker_name"] as? String) ?? localSpeakerName()
+    }
     static func autoMeetingCaptions() -> Bool { load()?["auto_meeting_captions"] as? Bool ?? false }
     static func sharedMicrophone() -> Bool { load()?["shared_microphone"] as? Bool ?? false }
     static func localSpeakerName() -> String? {

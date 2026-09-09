@@ -12,7 +12,7 @@ final class MeetTileEvidenceTests: XCTestCase {
             let json = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any])
             let meetings = try XCTUnwrap(json["speaker_boxes"] as? [String: [[String: String]]])
             for raw in meetings.values where !raw.isEmpty {
-                let nodes = raw.map { MeetTileNode(parent: $0["parent"].flatMap(Int.init), role: $0["role"] ?? "", text: $0["text"] ?? "",
+                let nodes = raw.map { SpeakerUINode(parent: $0["parent"].flatMap(Int.init), role: $0["role"] ?? "", text: $0["text"] ?? "",
                                                     classes: Set(($0["classes"] ?? "").split(separator: " ").map(String.init))) }
                 let tiles = MeetTileEvidence.tiles(nodes)
                 XCTAssertEqual(tiles.count, 2)
@@ -25,8 +25,8 @@ final class MeetTileEvidenceTests: XCTestCase {
         XCTAssertEqual(states, ["local", "remote"])
     }
 
-    private func node(_ parent: Int?, _ classes: String = "", text: String = "", role: String = "AXGroup") -> MeetTileNode {
-        MeetTileNode(parent: parent, role: role, text: text, classes: Set(classes.split(separator: " ").map(String.init)))
+    private func node(_ parent: Int?, _ classes: String = "", text: String = "", role: String = "AXGroup") -> SpeakerUINode {
+        SpeakerUINode(parent: parent, role: role, text: text, classes: Set(classes.split(separator: " ").map(String.init)))
     }
 
     func testLiveMeetStructureAssociatesActivityWithTheCorrectTile() {

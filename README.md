@@ -102,9 +102,26 @@ missing observations, very short activity, and unrecognized markup remain
 unattributed. Names never propagate to unrelated turns in an acoustic cluster.
 The local tile is excluded from remote naming, and changing tile names invalidate
 the cached association until the next scan. Minimized meeting windows cannot
-provide tile evidence. The name and activity structure was verified in Brave;
-other browsers need live validation. Teams and Zoom currently contribute only
-explicit accessible speaking labels when exposed.
+provide tile evidence. The Meet name and activity structure was verified in
+Brave; other browsers need live validation.
+
+Teams desktop uses its accessible participant names and speaking-frame state.
+This was checked in a two-person call with captions off. Unknown layouts and
+explicitly pinned tiles do not contribute names.
+
+Zoom desktop exposes participant names through Accessibility. Quill also needs
+Screen Recording permission to read the green/yellow active-speaker borders.
+Only the identified Zoom meeting window is captured; frames are processed in
+memory and are never saved or uploaded. Keep the meeting window and your own
+tile visible. Your Zoom display name must match `local_speaker_name` or the
+optional `zoom_local_speaker_name` override. If Quill cannot identify your tile,
+it withholds Zoom names. The menu shows missing permission or name-match issues.
+Set `zoom_visual_speaker_detection` to `false` to disable window capture.
+
+Zoom capture and border/name mapping have passed a synthetic window test;
+remote speaking-border detection in a live Zoom call still needs validation.
+Web Teams and web Zoom do not yet have dedicated tile adapters. A call with
+several remote participants also needs live validation.
 
 Captions, when already enabled, remain an optional source of additional evidence.
 A unique five-word phrase can match a caption to the local transcript, but a
@@ -122,6 +139,7 @@ Optional configuration in `~/.config/quill/config.json`:
   "speaker_detection": true,
   "auto_meeting_captions": false,
   "local_speaker_name": "Your name",
+  "zoom_visual_speaker_detection": true,
   "shared_microphone": false
 }
 ```
