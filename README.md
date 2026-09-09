@@ -91,19 +91,25 @@ using FluidAudio's offline Pyannote/WeSpeaker/VBx pipeline. Unknown voices
 receive stable IDs within that transcript and readable labels such as
 `Speaker 1`. Ambiguous overlapping speech remains `Unknown speaker`.
 
-For Google Meet, Quill enables captions once when it starts watching a
-recording and reads speaker-labelled caption blocks through macOS
-Accessibility. It matches caption text to the local transcript, allowing
-for caption delay. A unique five-word phrase establishes a match, and only
-the matched speech gets the caption's name. Names never propagate to unrelated
-turns in an acoustic cluster. It does not use calendar attendees
-to guess names. A subsequent manual choice to turn captions off is respected.
+For Google Meet, Quill reads each visible speaker tile's name and speaking
+indicator through macOS Accessibility. It caches the tile controls during its
+regular meeting scan, then reads their state four times per second while
+recording. This works independently of the spoken language and does not
+require Meet captions, saved transcripts, or a browser extension.
 
-The caption structure was verified in a live Brave Meet call, including
-when another Brave window was foreground. Self captions (`You`) cannot name
-a remote voice. Other browsers use the same Accessibility adapter but need
-live validation. Teams and Zoom currently contribute only explicit accessible
-speaking labels when exposed; their caption adapters are not implemented.
+Only observed speaking intervals receive names. Multiple active remote tiles,
+missing observations, very short activity, and unrecognized markup remain
+unattributed. Names never propagate to unrelated turns in an acoustic cluster.
+The local tile is excluded from remote naming, and changing tile names invalidate
+the cached association until the next scan. Minimized meeting windows cannot
+provide tile evidence. The name and activity structure was verified in Brave;
+other browsers need live validation. Teams and Zoom currently contribute only
+explicit accessible speaking labels when exposed.
+
+Captions, when already enabled, remain an optional source of additional evidence.
+A unique five-word phrase can match a caption to the local transcript, but a
+wrong caption language may prevent that match. Quill no longer enables captions
+by default. Set `auto_meeting_captions` to `true` to restore that behavior.
 
 Your microphone uses the configured local name, captured in session metadata
 at recording time. For several people sharing your microphone, set
@@ -114,7 +120,7 @@ Optional configuration in `~/.config/quill/config.json`:
 ```json
 {
   "speaker_detection": true,
-  "auto_meeting_captions": true,
+  "auto_meeting_captions": false,
   "local_speaker_name": "Your name",
   "shared_microphone": false
 }
@@ -125,6 +131,7 @@ Preview a completed recording without changing it or invoking archive hooks:
 ```sh
 quill transcribe /path/to/recording --output /tmp/speaker-preview
 quill meetings --speakers
+quill meetings --speaker-boxes
 ```
 
 Use `--offline` to require cached models, `--no-speakers` to skip separation,
@@ -140,6 +147,9 @@ quill speakers label /path/to/recording --speaker system_1 --name "Alice"
 ```
 
 Corrections make an exact JSON backup and update every matching turn.
+A known one-to-one recording can be corrected with `--sole-remote-speaker`
+instead of `--speaker`, explicitly confirming that all remote speech is from
+that person. This includes otherwise unknown remote segments.
 A rerun of diarization does not reuse manual names against potentially changed
 speaker IDs. Run your archive sync separately to publish a correction.
 Voice recognition across meetings is deferred: the independent-utterance

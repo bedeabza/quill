@@ -10,6 +10,9 @@ final class MeetingAssistant {
     private var policy = MeetingPolicy()
     private let scanner = MeetingScanner()
     private var timer: Timer?
+    private var speakerTimer: Timer?
+    private var samplingSpeakers = false
+    private var recordingGeneration = 0
     private var scanning = false
     private let recordingNotification: (String, String) -> Void
     private var automaticStart: DetectedMeeting?
@@ -26,11 +29,16 @@ final class MeetingAssistant {
             MainActor.assumeIsolated { self?.poll() }
         }
         poll()
+        speakerTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.sampleSpeakers() }
+        }
     }
 
     func shutdown() {
         timer?.invalidate()
         timer = nil
+        speakerTimer?.invalidate()
+        speakerTimer = nil
     }
 
     func toggleEnabled() {
@@ -53,11 +61,13 @@ final class MeetingAssistant {
     }
 
     func recordingStarted() {
+        recordingGeneration += 1
         policy.recordingStarted(for: automaticStart, automatic: automaticStart != nil)
         recordingNotification("Quill: Recording started", automaticStart.map { "\($0.service) in \($0.app)" } ?? "Recording microphone and system audio.")
     }
 
     func recordingStopped() {
+        recordingGeneration += 1
         policy.recordingStopped()
         recordingNotification("Quill: Recording stopped", "Your recording is being prepared for transcription.")
     }
@@ -123,6 +133,21 @@ final class MeetingAssistant {
             case .none:
                 break
             }
+        }
+    }
+
+    private func sampleSpeakers() {
+        guard enabled, Config.speakerDetection(), policy.recording, !samplingSpeakers,
+              let meeting = policy.recordingMeeting else { return }
+        samplingSpeakers = true
+        let generation = recordingGeneration
+        Task { [weak self, scanner] in
+            let observation = await scanner.speakerActivity(for: meeting.id)
+            guard let self else { return }
+            self.samplingSpeakers = false
+            guard generation == self.recordingGeneration, self.policy.recording,
+                  self.policy.recordingMeeting?.id == meeting.id, let observation else { return }
+            self.onSpeakers?(observation)
         }
     }
 

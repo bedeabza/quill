@@ -60,28 +60,35 @@ struct Speakers: ParsableCommand {
 struct LabelSpeaker: ParsableCommand {
     static let configuration = CommandConfiguration(commandName: "label", abstract: "Name every turn of one speaker in a completed transcript.")
     @Argument var recording: String
-    @Option(help: "Speaker ID from transcript.json, for example system_1.") var speaker: String
+    @Option(help: "Speaker ID from transcript.json, for example system_1.") var speaker: String?
+    @Flag(help: "Explicitly confirm that all remote speech in this recording belongs to this one person.") var soleRemoteSpeaker = false
     @Option(help: "Verified speaker name.") var name: String
 
     func run() throws {
+        guard (speaker != nil) != soleRemoteSpeaker else {
+            throw ValidationError("Choose either --speaker or --sole-remote-speaker.")
+        }
         guard let name = SpeakerAttribution.cleanName(name) else { throw ValidationError("Enter a non-empty speaker name without line breaks.") }
         let dir = URL(fileURLWithPath: (recording as NSString).expandingTildeInPath)
         let url = dir.appendingPathComponent("transcript.json")
         var transcript = try JSONDecoder().decode(Transcript.self, from: Data(contentsOf: url))
-        guard transcript.segments.contains(where: { $0.speaker == speaker }),
-              !["them", "system_unknown", "mic_unknown"].contains(speaker) else {
+        func matches(_ segment: Transcript.Segment) -> Bool {
+            soleRemoteSpeaker ? (segment.source == "system" || segment.speaker == "them") : segment.speaker == speaker
+        }
+        guard transcript.segments.contains(where: matches),
+              soleRemoteSpeaker || !["them", "system_unknown", "mic_unknown"].contains(speaker ?? "") else {
             throw ValidationError("Choose a separated speaker ID; mixed or unknown speech cannot receive a person's name.")
         }
         // Keep an exact backup. Corrections are scoped to these speaker IDs;
         // regenerating diarization does not carry names to possibly different IDs.
         let backup = dir.appendingPathComponent("transcript-before-label-\(UUID().uuidString).json")
         try FileManager.default.copyItem(at: url, to: backup)
-        for index in transcript.segments.indices where transcript.segments[index].speaker == speaker {
+        for index in transcript.segments.indices where matches(transcript.segments[index]) {
             transcript.segments[index].speaker_name = name
             transcript.segments[index].attribution = "manual"
         }
         transcript.schema_version = 2
         try transcript.write(to: dir)
-        print("Labelled \(speaker) as \(name). Run the archive sync to publish the correction.")
+        print("Labelled \(speaker ?? "the verified sole remote speaker") as \(name). Run the archive sync to publish the correction.")
     }
 }

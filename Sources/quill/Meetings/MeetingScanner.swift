@@ -42,6 +42,7 @@ struct MeetingScan: Sendable {
     var speakerObservedAt: [String: Double] = [:]
     var captions: [SpeakerObservation] = []
     var speakerCaptureStatus: [String: String] = [:]
+    var speakerBoxes: [String: [[String: String]]] = [:]
     var observedAt = Date().timeIntervalSince1970
 }
 
@@ -63,6 +64,8 @@ actor MeetingScanner {
         let isTab: Bool
         let selected: Bool
         let activeSpeaker: String?
+        let parentIndex: Int?
+        let classNames: [String]
     }
     private struct Window {
         let element: AXUIElement
@@ -75,8 +78,35 @@ actor MeetingScanner {
     private var endedSince: [String: TimeInterval] = [:]
     private var endState = MeetingEndState()
     private var captionRequests: Set<String> = []
+    private struct CachedTile {
+        let indicator: AXUIElement
+        let nameElement: AXUIElement
+        let name: String
+        let isLocal: Bool
+    }
+    private var tiles: [String: [CachedTile]] = [:]
 
-    func scan(apps: [MeetingApp], captureSpeakers: Bool = false, enableCaptions: Bool = false,
+    /// Fast path while recording: read only cached tile indicators and names,
+    /// rather than walking every browser window four times per second.
+    func speakerActivity(for meetingID: String) -> SpeakerObservation? {
+        guard AXIsProcessTrusted(), let entry = known[meetingID], !bool(entry.window, kAXMinimizedAttribute),
+              let cached = tiles[meetingID], !cached.isEmpty else { return nil }
+        if let tab = entry.tab, !bool(tab, kAXValueAttribute) && !bool(tab, kAXSelectedAttribute) { return nil }
+        let started = Date().timeIntervalSince1970
+        var names: [String] = []
+        for tile in cached {
+            guard !isDestroyed(tile.indicator), SpeakerAttribution.cleanName(string(tile.nameElement, kAXValueAttribute)) == tile.name else { return nil }
+            let classes = Set(strings(tile.indicator, "AXDOMClassList"))
+            guard classes.isSuperset(of: ["lH9pqf", "atLQQ"]) else { return nil }
+            if !tile.isLocal && MeetTileEvidence.isSpeaking(classes: classes) { names.append(tile.name) }
+        }
+        let ended = Date().timeIntervalSince1970
+        guard ended - started <= 0.2 else { return nil }
+        return SpeakerObservation(observed_at: (started + ended) / 2, meeting_id: meetingID,
+                                  names: Array(Set(names)).sorted(), source: "meeting_tile")
+    }
+
+    func scan(apps: [MeetingApp], captureSpeakers: Bool = false, enableCaptions: Bool = false, inspectBoxes: Bool = false,
               captionMeetingID: String? = nil) -> MeetingScan {
         var result = MeetingScan()
         let pids = Set(apps.map(\.pid))
@@ -150,7 +180,7 @@ actor MeetingScanner {
                     else if let document = entry.document, !isDestroyed(document),
                             window.nodes.contains(where: { $0.role == "AXWebArea" && CFEqual($0.element, document) }),
                             entry.tab.map({ tab in window.nodes.contains(where: { $0.isTab && $0.selected && CFEqual($0.element, tab) }) }) ?? true {
-                        nodes = readTree(document, skipWebContent: false).nodes
+                        nodes = readTree(document, skipWebContent: false, readClasses: true).nodes
                     } else { nodes = [] }
                     let captureEnded = Date().timeIntervalSince1970
                     result.speakerCaptureStatus[entry.meeting.id] = "\(nodes.count) nodes; \(nodes.filter { $0.text == "Captions" }.count) caption regions"
@@ -158,6 +188,27 @@ actor MeetingScanner {
                         ? Array(Set(nodes.compactMap(\.activeSpeaker))).sorted() : []
                     result.speakerObservedAt[entry.meeting.id] = (captureStarted + captureEnded) / 2
                     if entry.meeting.service == "Google Meet" {
+                        let tileNodes = nodes.map { MeetTileNode(parent: $0.parentIndex, role: $0.role, text: $0.text, classes: Set($0.classNames)) }
+                        tiles[entry.meeting.id] = MeetTileEvidence.tiles(tileNodes).map {
+                            CachedTile(indicator: nodes[$0.indicatorIndex].element, nameElement: nodes[$0.nameIndex].element,
+                                       name: $0.name, isLocal: $0.isLocal)
+                        }
+                        result.speakerCaptureStatus[entry.meeting.id, default: ""] += "; \(tiles[entry.meeting.id]?.count ?? 0) speaker tiles"
+                        if inspectBoxes {
+                            result.speakerBoxes[entry.meeting.id] = nodes.prefix(700).enumerated().map { index, node in
+                                var value: CFTypeRef?
+                                AXUIElementCopyAttributeValue(node.element, "AXDOMClassList" as CFString, &value)
+                                var row = ["index": String(index), "parent": node.parentIndex.map(String.init) ?? "", "role": node.role, "text": String(node.text.prefix(160)),
+                                           "classes": (value as? [String] ?? []).joined(separator: " ")]
+                                var sizeValue: CFTypeRef?
+                                if AXUIElementCopyAttributeValue(node.element, kAXSizeAttribute as CFString, &sizeValue) == .success,
+                                   let sizeValue, CFGetTypeID(sizeValue) == AXValueGetTypeID() {
+                                    var size = CGSize.zero
+                                    if AXValueGetValue(sizeValue as! AXValue, .cgSize, &size) { row["size"] = "\(size.width),\(size.height)" }
+                                }
+                                return row
+                            }
+                        }
                         if nodes.contains(where: { $0.text == "Captions" }) {
                             captionRequests.insert(entry.meeting.id)
                         }
@@ -210,6 +261,7 @@ actor MeetingScanner {
         let now = ProcessInfo.processInfo.systemUptime
         for (id, observation) in result.observations {
             if observation == .ended {
+                tiles.removeValue(forKey: id)
                 if endedSince[id] == nil { endedSince[id] = now }
                 // Longer than the stop countdown; never prune uncertain meetings.
                 if now - (endedSince[id] ?? now) > 120 {
@@ -244,13 +296,13 @@ actor MeetingScanner {
         return result
     }
 
-    private func readTree(_ window: AXUIElement, skipWebContent: Bool) -> Window {
+    private func readTree(_ window: AXUIElement, skipWebContent: Bool, readClasses: Bool = false) -> Window {
         var nodes: [Node] = []
-        var queue = [window]
+        var queue: [(AXUIElement, Int?)] = [(window, nil)]
         var visited: Set<CFHashCode> = []
         var complete = true
         let deadline = ProcessInfo.processInfo.systemUptime + 1.5
-        while let element = queue.popLast() {
+        while let (element, parentIndex) = queue.popLast() {
             guard visited.insert(CFHash(element)).inserted else { continue }
             guard nodes.count < 2500, ProcessInfo.processInfo.systemUptime < deadline else {
                 complete = false
@@ -270,10 +322,11 @@ actor MeetingScanner {
             let selected = isTab && (bool(element, kAXValueAttribute) || bool(element, kAXSelectedAttribute))
             let activeSpeaker = SpeakerEvidence.activeName(label: description, role: role)
                 ?? SpeakerEvidence.activeName(label: title, role: role)
-            nodes.append(Node(element: element, role: role, text: text, url: url, isTab: isTab, selected: selected, activeSpeaker: activeSpeaker))
+            nodes.append(Node(element: element, role: role, text: text, url: url, isTab: isTab, selected: selected, activeSpeaker: activeSpeaker,
+                              parentIndex: parentIndex, classNames: readClasses ? strings(element, "AXDOMClassList") : []))
             if skipWebContent && role == "AXWebArea" { continue }
             if let childElements = children(element, attribute: kAXChildrenAttribute) {
-                queue.append(contentsOf: childElements.reversed())
+                queue.append(contentsOf: childElements.reversed().map { ($0, nodes.count - 1) })
             } else { complete = false }
         }
         return Window(element: window, nodes: nodes, complete: complete)
@@ -284,6 +337,12 @@ actor MeetingScanner {
         guard AXUIElementCopyAttributeValue(element, attribute as CFString, &value) == .success else { return "" }
         if let url = value as? URL { return url.absoluteString }
         return String((value as? String ?? "").prefix(2000))
+    }
+
+    private func strings(_ element: AXUIElement, _ attribute: String) -> [String] {
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, attribute as CFString, &value) == .success else { return [] }
+        return value as? [String] ?? []
     }
 
     private func bool(_ element: AXUIElement, _ attribute: String) -> Bool {

@@ -15,6 +15,7 @@ final class RecordingSession {
     private var seenCaptions: Set<String> = []
 
     func recordSpeakers(_ observation: SpeakerObservation) {
+        guard observation.observed_at >= startedAt.timeIntervalSince1970 else { return }
         if let text = observation.text {
             let key = observation.meeting_id + "\n" + observation.names.joined(separator: "\n") + "\n" + text
             guard seenCaptions.insert(key).inserted else { return }

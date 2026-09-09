@@ -53,12 +53,15 @@ struct Meetings: ParsableCommand {
 
     @Flag(help: "Include currently exposed active-speaker names for diagnostics.")
     var speakers = false
+    @Flag(help: "Inspect meeting tile accessibility classes without changing the meeting.")
+    var speakerBoxes = false
 
     func run() throws {
         let watch = self.watch
         let speakers = self.speakers
+        let speakerBoxes = self.speakerBoxes
         Task { @MainActor in
-            do { try await Self.inspect(watch: watch, speakers: speakers) }
+            do { try await Self.inspect(watch: watch, speakers: speakers, speakerBoxes: speakerBoxes) }
             catch {
                 FileHandle.standardError.write(Data("Meeting inspection failed: \(error)\n".utf8))
                 Darwin.exit(1)
@@ -68,22 +71,28 @@ struct Meetings: ParsableCommand {
         dispatchMain()
     }
 
-    @MainActor private static func inspect(watch: Bool, speakers: Bool) async throws {
+    @MainActor private static func inspect(watch: Bool, speakers: Bool, speakerBoxes: Bool) async throws {
         let scanner = MeetingScanner()
         repeat {
             let apps = MeetingApp.running()
-            let scan = await scanner.scan(apps: apps, captureSpeakers: speakers)
+            let scan = await scanner.scan(apps: apps, captureSpeakers: speakers || speakerBoxes, inspectBoxes: speakerBoxes)
             var rows: [[String: String]] = []
+            var tileSpeakers: [String: [String]] = [:]
             for (id, observation) in scan.observations.sorted(by: { $0.key < $1.key }) {
                 switch observation {
                 case .present(let meeting): rows.append(["id": id, "state": "present", "app": meeting.app, "service": meeting.service])
                 case .ended: rows.append(["id": id, "state": "ended"])
                 case .unknown: rows.append(["id": id, "state": "unknown"])
                 }
+                if speakers || speakerBoxes, let activity = await scanner.speakerActivity(for: id) {
+                    tileSpeakers[id] = activity.names
+                }
             }
             let output: [String: Any] = ["needs_accessibility_permission": scan.needsPermission,
                                          "apps": apps.map(\.name), "meetings": rows, "active_speakers": scan.speakers,
                                          "speaker_capture": scan.speakerCaptureStatus,
+                                         "speaker_boxes": scan.speakerBoxes,
+                                         "tile_speakers": tileSpeakers, "observed_at": scan.observedAt,
                                          "captions": scan.captions.map { ["speaker": $0.names.first ?? "", "text": $0.text ?? ""] }]
             let data = try JSONSerialization.data(withJSONObject: output, options: [.sortedKeys])
             FileHandle.standardOutput.write(data + Data("\n".utf8))

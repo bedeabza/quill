@@ -71,6 +71,7 @@ enum SpeakerAttribution {
     static func nameSpans(turns: [SpeakerTurn], observations: [SpeakerObservation], audioStartedAt: Double,
                           segments: [TranscriptSegment]) -> [NamedSpeakerSpan] {
         var result = captionSpans(observations: observations, audioStartedAt: audioStartedAt, segments: segments)
+        result += tileSpans(observations: observations, audioStartedAt: audioStartedAt)
         for turn in turns {
             let local = observations.filter { $0.source == "accessibility_active_speaker" &&
                 $0.observed_at - audioStartedAt >= turn.start && $0.observed_at - audioStartedAt <= turn.end }
@@ -79,6 +80,39 @@ enum SpeakerAttribution {
             guard let first = times.min(), let last = times.max() else { continue }
             result.append(NamedSpeakerSpan(start: first, end: last, identity: identity))
         }
+        return result
+    }
+
+    /// Tile state is independent of caption language. Keep short, observed
+    /// runs only; unknown/multiple speakers and missing samples end the run.
+    static func tileSpans(observations: [SpeakerObservation], audioStartedAt: Double) -> [NamedSpeakerSpan] {
+        let samples = observations.filter { $0.source == "meeting_tile" }.sorted { $0.observed_at < $1.observed_at }
+        var result: [NamedSpeakerSpan] = []
+        var name: String?
+        var meetingID: String?
+        var first = 0.0, last = 0.0
+        var count = 0
+        func flush() {
+            if let name, count >= 3, last - first >= 0.4 {
+                let start = max(0, first - audioStartedAt - 0.125), end = last - audioStartedAt + 0.125
+                guard end > start else { return }
+                result.append(NamedSpeakerSpan(start: start, end: end,
+                    identity: SpeakerIdentity(name: name, source: "meeting_tile", evidence_count: count)))
+            }
+        }
+        for sample in samples {
+            let current = sample.names.count == 1 ? cleanName(sample.names.first) : nil
+            if current != name || sample.meeting_id != meetingID || sample.observed_at - last > 0.75 {
+                flush()
+                name = current
+                meetingID = sample.meeting_id
+                first = sample.observed_at
+                count = 0
+            }
+            if sample.observed_at > last { count += 1 }
+            last = sample.observed_at
+        }
+        flush()
         return result
     }
 
@@ -131,7 +165,9 @@ enum SpeakerAttribution {
     }
 
     private static func identity(start: Double, end: Double, spans: [NamedSpeakerSpan]) -> SpeakerIdentity? {
-        let candidates = spans.filter { min(end, $0.end) - max(start, $0.start) >= (end - start) * 0.6 }
+        let overlapping = spans.filter { min(end, $0.end) - max(start, $0.start) >= (end - start) * 0.6 }
+        let exact = overlapping.filter { ["meeting_caption", "meeting_tile"].contains($0.identity.source) }
+        let candidates = exact.isEmpty ? overlapping : exact
         guard end > start, Set(candidates.map { $0.identity.name }).count == 1 else { return nil }
         return candidates.first?.identity
     }
@@ -143,9 +179,13 @@ enum SpeakerAttribution {
             durations[turn.speaker_id, default: 0] += max(0, min(end, turn.end) - max(start, turn.start))
         }
         let ranked = durations.sorted { $0.value > $1.value }
-        guard let best = ranked.first, best.value / (end - start) >= 0.6,
-              ranked.dropFirst().allSatisfy({ $0.value / (end - start) < 0.2 }) else { return nil }
-        return best.key
+        if let best = ranked.first, best.value / (end - start) >= 0.6,
+           ranked.dropFirst().allSatisfy({ $0.value / (end - start) < 0.2 }) { return best.key }
+        // Diarization often trims the start/end of a syllable. Fill only a
+        // bounded edge with one nearby voice, never an overlap or voice change.
+        guard end - start <= 1.5 else { return nil }
+        let nearby = Set(turns.filter { $0.end >= start - 0.6 && $0.start <= end + 0.6 }.map(\.speaker_id))
+        return nearby.count == 1 ? nearby.first : nil
     }
 
     static func align(_ segments: [TranscriptSegment], turns: [SpeakerTurn], source: String,
