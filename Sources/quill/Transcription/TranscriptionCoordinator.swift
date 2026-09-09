@@ -97,11 +97,16 @@ actor TranscriptionCoordinator {
         drainIfIdle()
     }
 
-    private func transcribe(_ dir: URL) async throws {
+    func transcribe(_ dir: URL, detectSpeakers: Bool = Config.speakerDetection(), remoteSpeakerCount: Int? = nil) async throws {
         let meta = try SessionMeta.read(from: dir)
         let engine = try await preparedEngine()
+        let observationURL = dir.appendingPathComponent("speaker-observations.jsonl")
+        let observations = ((try? String(contentsOf: observationURL, encoding: .utf8)) ?? "")
+            .split(separator: "\n").compactMap { try? JSONDecoder().decode(SpeakerObservation.self, from: Data($0.utf8)) }
 
         var merged: [Transcript.Segment] = []
+        var analysis = SpeakerAnalysis(turns: [], names: [:])
+        var speakerStatus: [String: String] = [:]
         for track in meta.tracks {
             let audio = dir.appendingPathComponent(track.file)
             guard FileManager.default.fileExists(atPath: audio.path) else {
@@ -119,12 +124,40 @@ actor TranscriptionCoordinator {
                 continue
             }
             let offset = TimeInterval(track.offsetMs) / 1000
+            if detectSpeakers && (track.speaker == "them" || meta.sharedMicrophone) && !segments.isEmpty {
+                do {
+                    log(dir, "separating speakers in \(track.file)")
+                    var trackAnalysis = try await SpeakerDiarizer.analyze(audio, source: track.source,
+                                                                         speakerCount: track.source == "system" ? remoteSpeakerCount : nil)
+                    if let started = meta.audioStartedAt, track.source == "system" {
+                        trackAnalysis.named_spans = SpeakerAttribution.nameSpans(turns: trackAnalysis.turns, observations: observations,
+                                                               audioStartedAt: started + offset, segments: segments)
+                        for span in trackAnalysis.named_spans {
+                            trackAnalysis.names[SpeakerAttribution.namedSpeakerID(span.identity, source: track.source)] = span.identity
+                        }
+                    }
+                    merged += SpeakerAttribution.align(segments, turns: trackAnalysis.turns, source: track.source,
+                                                       offset: offset, namedSpans: trackAnalysis.named_spans)
+                    analysis.turns += trackAnalysis.turns.map { SpeakerTurn(speaker_id: $0.speaker_id, start: $0.start + offset, end: $0.end + offset) }
+                    analysis.names.merge(trackAnalysis.names) { _, new in new }
+                    analysis.named_spans += trackAnalysis.named_spans.map { NamedSpeakerSpan(start: $0.start + offset, end: $0.end + offset, identity: $0.identity) }
+                    speakerStatus[track.source] = trackAnalysis.turns.isEmpty ? "no_speech_detected" : "complete"
+                    continue
+                } catch {
+                    speakerStatus[track.source] = "failed"
+                    log(dir, "speaker detection failed for \(track.file): \(error); preserving unlabelled transcript")
+                }
+            }
+            let localName = track.source == "mic" && !meta.sharedMicrophone ? meta.localSpeakerName : nil
             merged += segments.map {
                 Transcript.Segment(
                     speaker: track.speaker,
                     start_ms: Int(($0.start + offset) * 1000),
                     end_ms: Int(($0.end + offset) * 1000),
-                    text: $0.text
+                    text: $0.text,
+                    source: track.source,
+                    speaker_name: localName,
+                    attribution: localName == nil ? "audio_source" : "local_microphone"
                 )
             }
         }
@@ -134,8 +167,13 @@ actor TranscriptionCoordinator {
             engine: engine.name,
             model: engine.model,
             created_at: ISO8601DateFormatter().string(from: Date()),
-            segments: merged
+            segments: merged,
+            schema_version: 2,
+            speaker_detection: speakerStatus
         )
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        try encoder.encode(analysis).write(to: dir.appendingPathComponent("speaker-analysis.json"), options: .atomic)
         try transcript.write(to: dir)
         log(dir, "done — \(merged.count) segments")
     }
@@ -188,14 +226,18 @@ actor TranscriptionCoordinator {
 
 /// The slice of meta.json the coordinator needs: which files exist, who they
 /// represent, and how far each track started after the earliest one.
-private struct SessionMeta {
+struct SessionMeta {
     struct Track {
         let file: String
         let speaker: String
         let offsetMs: Int
+        var source: String { speaker == "me" ? "mic" : "system" }
     }
 
     let tracks: [Track]
+    let audioStartedAt: Double?
+    let localSpeakerName: String?
+    let sharedMicrophone: Bool
 
     enum MetaError: Error, CustomStringConvertible {
         case unreadable(URL)
@@ -225,24 +267,40 @@ private struct SessionMeta {
         if let system = files["system"] {
             tracks.append(Track(file: system, speaker: "them", offsetMs: offsets["system"] ?? 0))
         }
-        return SessionMeta(tracks: tracks)
+        return SessionMeta(tracks: tracks, audioStartedAt: json["audio_started_at"] as? Double,
+                           localSpeakerName: SpeakerAttribution.cleanName(json["local_speaker_name"] as? String),
+                           sharedMicrophone: json["shared_microphone"] as? Bool ?? false)
     }
 }
 
 /// Canonical transcript. Property names are the JSON schema — this struct
 /// exists to be serialized.
-private struct Transcript: Codable {
+struct Transcript: Codable {
     struct Segment: Codable {
         let speaker: String
         let start_ms: Int
         let end_ms: Int
         let text: String
+        var source: String? = nil
+        var speaker_name: String? = nil
+        var attribution: String? = nil
+
+        var displayName: String {
+            if let speaker_name { return speaker_name }
+            if speaker.hasSuffix("_unknown") { return "Unknown speaker" }
+            if let number = speaker.split(separator: "_").last, Int(number) != nil {
+                return source == "mic" ? "Local speaker \(number)" : "Speaker \(number)"
+            }
+            return speaker
+        }
     }
 
     let engine: String
     let model: String
     let created_at: String
-    let segments: [Segment]
+    var segments: [Segment]
+    var schema_version: Int? = nil
+    var speaker_detection: [String: String]? = nil
 
     /// Write transcript.json and render transcript.md. Both writes are atomic
     /// (temp file + rename), so a partially written transcript never exists on
@@ -250,16 +308,18 @@ private struct Transcript: Codable {
     func write(to dir: URL) throws {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        try encoder.encode(self)
-            .write(to: dir.appendingPathComponent("transcript.json"), options: .atomic)
         try Data(rendered(title: dir.lastPathComponent).utf8)
             .write(to: dir.appendingPathComponent("transcript.md"), options: .atomic)
+        try encoder.encode(self)
+            .write(to: dir.appendingPathComponent("transcript.json"), options: .atomic)
     }
 
     private func rendered(title: String) -> String {
         var lines = ["# \(title)", "", "engine: \(engine) (\(model))", ""]
         for seg in segments {
-            lines.append("**[\(Self.clock(seg.start_ms))] \(seg.speaker):** \(seg.text)")
+            let name = seg.displayName.replacingOccurrences(of: "*", with: "\\*")
+                .replacingOccurrences(of: "[", with: "\\[").replacingOccurrences(of: "]", with: "\\]")
+            lines.append("**[\(Self.clock(seg.start_ms))] \(name):** \(seg.text)")
             lines.append("")
         }
         return lines.joined(separator: "\n")

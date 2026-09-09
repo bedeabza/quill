@@ -8,7 +8,7 @@ struct Quill: ParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "quill",
         abstract: "Local meeting recorder + transcriber. Records mic and system audio as two tracks, then transcribes on-device.",
-        subcommands: [Run.self, Doctor.self, Install.self, Meetings.self, Notifications.self],
+        subcommands: [Run.self, Doctor.self, Install.self, Meetings.self, Notifications.self, Transcribe.self, Speakers.self],
         defaultSubcommand: Run.self
     )
 }
@@ -51,10 +51,14 @@ struct Meetings: ParsableCommand {
     @Flag(help: "Continuously print detection changes until interrupted.")
     var watch = false
 
+    @Flag(help: "Include currently exposed active-speaker names for diagnostics.")
+    var speakers = false
+
     func run() throws {
         let watch = self.watch
+        let speakers = self.speakers
         Task { @MainActor in
-            do { try await Self.inspect(watch: watch) }
+            do { try await Self.inspect(watch: watch, speakers: speakers) }
             catch {
                 FileHandle.standardError.write(Data("Meeting inspection failed: \(error)\n".utf8))
                 Darwin.exit(1)
@@ -64,11 +68,11 @@ struct Meetings: ParsableCommand {
         dispatchMain()
     }
 
-    @MainActor private static func inspect(watch: Bool) async throws {
+    @MainActor private static func inspect(watch: Bool, speakers: Bool) async throws {
         let scanner = MeetingScanner()
         repeat {
             let apps = MeetingApp.running()
-            let scan = await scanner.scan(apps: apps)
+            let scan = await scanner.scan(apps: apps, captureSpeakers: speakers)
             var rows: [[String: String]] = []
             for (id, observation) in scan.observations.sorted(by: { $0.key < $1.key }) {
                 switch observation {
@@ -78,7 +82,9 @@ struct Meetings: ParsableCommand {
                 }
             }
             let output: [String: Any] = ["needs_accessibility_permission": scan.needsPermission,
-                                         "apps": apps.map(\.name), "meetings": rows]
+                                         "apps": apps.map(\.name), "meetings": rows, "active_speakers": scan.speakers,
+                                         "speaker_capture": scan.speakerCaptureStatus,
+                                         "captions": scan.captions.map { ["speaker": $0.names.first ?? "", "text": $0.text ?? ""] }]
             let data = try JSONSerialization.data(withJSONObject: output, options: [.sortedKeys])
             FileHandle.standardOutput.write(data + Data("\n".utf8))
             if watch { try await Task.sleep(for: .seconds(2)) }
@@ -188,6 +194,7 @@ final class AppController: NSObject, NSApplicationDelegate {
         }
         meetings.onStop = { [weak self] in self?.stopSession() }
         meetings.onStatus = { [weak self] text, enabled in self?.menuBar.updateDetection(text, enabled: enabled) }
+        meetings.onSpeakers = { [weak self] observation in self?.session?.recordSpeakers(observation) }
         meetings.start()
 
         Task { [transcription, root] in

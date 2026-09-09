@@ -6,6 +6,13 @@ struct TranscriptSegment: Sendable {
     let start: TimeInterval
     let end: TimeInterval
     let text: String
+    var words: [TranscriptWord] = []
+}
+
+struct TranscriptWord: Sendable {
+    let start: TimeInterval
+    let end: TimeInterval
+    let text: String
 }
 
 /// A speech-to-text engine quill can run locally. Engines are prepared lazily

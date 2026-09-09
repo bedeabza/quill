@@ -38,6 +38,11 @@ struct MeetingApp: Sendable {
 struct MeetingScan: Sendable {
     var observations: [String: MeetingObservation] = [:]
     var needsPermission = false
+    var speakers: [String: [String]] = [:]
+    var speakerObservedAt: [String: Double] = [:]
+    var captions: [SpeakerObservation] = []
+    var speakerCaptureStatus: [String: String] = [:]
+    var observedAt = Date().timeIntervalSince1970
 }
 
 /// Accessibility objects stay on this actor. Only value snapshots reach UI code.
@@ -57,6 +62,7 @@ actor MeetingScanner {
         let url: String
         let isTab: Bool
         let selected: Bool
+        let activeSpeaker: String?
     }
     private struct Window {
         let element: AXUIElement
@@ -68,8 +74,10 @@ actor MeetingScanner {
     private var enabledAccessibility: Set<pid_t> = []
     private var endedSince: [String: TimeInterval] = [:]
     private var endState = MeetingEndState()
+    private var captionRequests: Set<String> = []
 
-    func scan(apps: [MeetingApp]) -> MeetingScan {
+    func scan(apps: [MeetingApp], captureSpeakers: Bool = false, enableCaptions: Bool = false,
+              captionMeetingID: String? = nil) -> MeetingScan {
         var result = MeetingScan()
         let pids = Set(apps.map(\.pid))
         enabledAccessibility.formIntersection(pids)
@@ -133,6 +141,45 @@ actor MeetingScanner {
                 }
                 let leave = hasCallControls(window)
                 let ended = window.nodes.contains { MeetingEvidence.isEndMessage($0.text) }
+                if captureSpeakers && !ended && !bool(entry.window, kAXMinimizedAttribute) {
+                    // Browser windows may contain several calls. Read only the
+                    // established meeting document, never names from another tab.
+                    let nodes: [Node]
+                    let captureStarted = Date().timeIntervalSince1970
+                    if app.service != nil { nodes = readTree(entry.window, skipWebContent: false).nodes }
+                    else if let document = entry.document, !isDestroyed(document),
+                            window.nodes.contains(where: { $0.role == "AXWebArea" && CFEqual($0.element, document) }),
+                            entry.tab.map({ tab in window.nodes.contains(where: { $0.isTab && $0.selected && CFEqual($0.element, tab) }) }) ?? true {
+                        nodes = readTree(document, skipWebContent: false).nodes
+                    } else { nodes = [] }
+                    let captureEnded = Date().timeIntervalSince1970
+                    result.speakerCaptureStatus[entry.meeting.id] = "\(nodes.count) nodes; \(nodes.filter { $0.text == "Captions" }.count) caption regions"
+                    result.speakers[entry.meeting.id] = captureEnded - captureStarted <= 0.8
+                        ? Array(Set(nodes.compactMap(\.activeSpeaker))).sorted() : []
+                    result.speakerObservedAt[entry.meeting.id] = (captureStarted + captureEnded) / 2
+                    if entry.meeting.service == "Google Meet" {
+                        if nodes.contains(where: { $0.text == "Captions" }) {
+                            captionRequests.insert(entry.meeting.id)
+                        }
+                        if enableCaptions && captionMeetingID == entry.meeting.id && !captionRequests.contains(entry.meeting.id),
+                           let button = nodes.first(where: { $0.role == kAXButtonRole && $0.text == "Turn on captions" }) {
+                            // Once per call. Respect a later manual choice to
+                            // switch captions off; diagnostics never press it.
+                            if AXUIElementPerformAction(button.element, kAXPressAction as CFString) == .success {
+                                captionRequests.insert(entry.meeting.id)
+                            }
+                        }
+                        for region in nodes where region.text == "Captions" {
+                            for block in children(region.element, attribute: kAXChildrenAttribute) ?? [] {
+                                let texts = readTree(block, skipWebContent: false).nodes.filter { $0.role == kAXStaticTextRole }.map(\.text)
+                                if let caption = SpeakerEvidence.caption(texts: texts, meetingID: entry.meeting.id,
+                                                                         observedAt: Date().timeIntervalSince1970) {
+                                    result.captions.append(caption)
+                                }
+                            }
+                        }
+                    }
+                }
                 if app.service != nil {
                     // Never infer end merely from a temporarily hidden Leave button.
                     result.observations[entry.meeting.id] = ended && !leave && window.complete ? .ended : (leave ? .present(entry.meeting) : .unknown)
@@ -169,9 +216,11 @@ actor MeetingScanner {
                     known.removeValue(forKey: id)
                     endedSince.removeValue(forKey: id)
                     endState.forget(id)
+                    captionRequests.remove(id)
                 }
             } else { endedSince.removeValue(forKey: id) }
         }
+        result.observedAt = Date().timeIntervalSince1970
         return result
     }
 
@@ -219,7 +268,9 @@ actor MeetingScanner {
             let axURL = role == "AXWebArea" ? string(element, "AXURL") : ""
             let url = axURL.isEmpty && role == "AXWebArea" ? string(element, kAXDocumentAttribute) : axURL
             let selected = isTab && (bool(element, kAXValueAttribute) || bool(element, kAXSelectedAttribute))
-            nodes.append(Node(element: element, role: role, text: text, url: url, isTab: isTab, selected: selected))
+            let activeSpeaker = SpeakerEvidence.activeName(label: description, role: role)
+                ?? SpeakerEvidence.activeName(label: title, role: role)
+            nodes.append(Node(element: element, role: role, text: text, url: url, isTab: isTab, selected: selected, activeSpeaker: activeSpeaker))
             if skipWebContent && role == "AXWebArea" { continue }
             if let childElements = children(element, attribute: kAXChildrenAttribute) {
                 queue.append(contentsOf: childElements.reversed())

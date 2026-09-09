@@ -10,6 +10,30 @@ final class RecordingSession {
 
     private let mic = MicRecorder()
     private let system = SystemAudioRecorder()
+    private let localSpeakerName = Config.localSpeakerName()
+    private let sharedMicrophone = Config.sharedMicrophone()
+    private var seenCaptions: Set<String> = []
+
+    func recordSpeakers(_ observation: SpeakerObservation) {
+        if let text = observation.text {
+            let key = observation.meeting_id + "\n" + observation.names.joined(separator: "\n") + "\n" + text
+            guard seenCaptions.insert(key).inserted else { return }
+        }
+        let url = dir.appendingPathComponent("speaker-observations.jsonl")
+        do {
+            let data = try JSONEncoder().encode(observation) + Data("\n".utf8)
+            if !FileManager.default.fileExists(atPath: url.path) {
+                try data.write(to: url, options: .atomic)
+            } else {
+                let handle = try FileHandle(forWritingTo: url)
+                defer { try? handle.close() }
+                try handle.seekToEnd()
+                try handle.write(contentsOf: data)
+            }
+        } catch {
+            FileHandle.standardError.write(Data("speaker observation write failed: \(error)\n".utf8))
+        }
+    }
 
     private static let folderFormat: DateFormatter = {
         let f = DateFormatter()
@@ -58,16 +82,19 @@ final class RecordingSession {
         let systemStart = system.firstBufferAt ?? startedAt
         let earliest = min(micStart, systemStart)
 
-        let meta: [String: Any] = [
+        var meta: [String: Any] = [
             "started": iso.string(from: startedAt),
             "ended": iso.string(from: ended),
             "duration_seconds": Int(ended.timeIntervalSince(startedAt)),
+            "audio_started_at": earliest.timeIntervalSince1970,
+            "shared_microphone": sharedMicrophone,
             "files": ["mic": "mic.caf", "system": "system.caf"],
             "start_offset_ms": [
                 "mic": Int(micStart.timeIntervalSince(earliest) * 1000),
                 "system": Int(systemStart.timeIntervalSince(earliest) * 1000),
             ],
         ]
+        if let localSpeakerName, !sharedMicrophone { meta["local_speaker_name"] = localSpeakerName }
         if let data = try? JSONSerialization.data(
             withJSONObject: meta,
             options: [.prettyPrinted, .sortedKeys]

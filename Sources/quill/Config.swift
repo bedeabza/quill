@@ -14,6 +14,12 @@ import Foundation
 /// directory as its argument — after the transcript is written, or right
 /// after recording when transcription is disabled.
 enum Config {
+    static func speakerDetection() -> Bool { load()?["speaker_detection"] as? Bool ?? true }
+    static func autoMeetingCaptions() -> Bool { load()?["auto_meeting_captions"] as? Bool ?? true }
+    static func sharedMicrophone() -> Bool { load()?["shared_microphone"] as? Bool ?? false }
+    static func localSpeakerName() -> String? {
+        SpeakerAttribution.cleanName(load()?["local_speaker_name"] as? String ?? NSFullUserName())
+    }
     static func meetingDetection() -> Bool { load()?["meeting_detection"] as? Bool ?? true }
 
     @discardableResult static func setMeetingDetection(_ enabled: Bool) -> Bool {

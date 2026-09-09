@@ -79,11 +79,86 @@ Each session lands in `~/Recordings/<yyyy.MM.dd-HHmm>/`:
 | `transcript.md` | the same transcript rendered for reading |
 | `transcribe.log` | transcription progress/errors for this session |
 
-Two tracks on purpose: speech models do better on clean single-source audio,
-and mic-vs-system is free two-party diarization — `me` vs `them` with no
-speaker-identification model. CAF on purpose: unlike m4a, it needs no
-finalization pass — if the process dies mid-meeting, everything already
-written is still readable.
+Two tracks keep your microphone separate from remote audio. Quill now runs
+speaker diarization on the remote track and aligns speakers to individual
+word timestamps. CAF needs no finalization pass, so audio already written
+remains readable if the process exits unexpectedly.
+
+## Speaker names
+
+Speaker separation runs automatically after recording, entirely on-device,
+using FluidAudio's offline Pyannote/WeSpeaker/VBx pipeline. Unknown voices
+receive stable IDs within that transcript and readable labels such as
+`Speaker 1`. Ambiguous overlapping speech remains `Unknown speaker`.
+
+For Google Meet, Quill enables captions once when it starts watching a
+recording and reads speaker-labelled caption blocks through macOS
+Accessibility. It matches caption text to the local transcript, allowing
+for caption delay. A unique five-word phrase establishes a match, and only
+the matched speech gets the caption's name. Names never propagate to unrelated
+turns in an acoustic cluster. It does not use calendar attendees
+to guess names. A subsequent manual choice to turn captions off is respected.
+
+The caption structure was verified in a live Brave Meet call, including
+when another Brave window was foreground. Self captions (`You`) cannot name
+a remote voice. Other browsers use the same Accessibility adapter but need
+live validation. Teams and Zoom currently contribute only explicit accessible
+speaking labels when exposed; their caption adapters are not implemented.
+
+Your microphone uses the configured local name, captured in session metadata
+at recording time. For several people sharing your microphone, set
+`shared_microphone` to `true` to separate those voices too.
+
+Optional configuration in `~/.config/quill/config.json`:
+
+```json
+{
+  "speaker_detection": true,
+  "auto_meeting_captions": true,
+  "local_speaker_name": "Your name",
+  "shared_microphone": false
+}
+```
+
+Preview a completed recording without changing it or invoking archive hooks:
+
+```sh
+quill transcribe /path/to/recording --output /tmp/speaker-preview
+quill meetings --speakers
+```
+
+Use `--offline` to require cached models, `--no-speakers` to skip separation,
+or `--remote-speakers 4` to supply a known count. `--force` replaces an
+existing transcript and regenerates speaker IDs and names. Automatic counts
+are estimates; similar voices, short interjections, echo, and overlapping
+speech can still merge or split speakers.
+
+Correct a separated speaker:
+
+```sh
+quill speakers label /path/to/recording --speaker system_1 --name "Alice"
+```
+
+Corrections make an exact JSON backup and update every matching turn.
+A rerun of diarization does not reuse manual names against potentially changed
+speaker IDs. Run your archive sync separately to publish a correction.
+Voice recognition across meetings is deferred: the independent-utterance
+experiment did not reliably match the same voices, so this release stores no
+persistent voice profiles.
+
+`speaker-observations.jsonl` contains captured caption/activity evidence;
+`speaker-analysis.json` stores turns and name evidence. Transcript schema
+v2 preserves `speaker`, `source`, `speaker_name`, and `attribution` separately.
+The matching Granola importer preserves those names while retaining legacy
+transcript rendering. A diarization failure is logged and marked in the
+transcript's `speaker_detection` field while the text is retained.
+
+Tests cover word-boundary alignment, delayed/stale/self captions, conflicting
+names, and offline one-, two-, three-, and four-voice audio
+fixtures. The audio fixtures come from the public
+[meeting-transcriber test suite](https://github.com/pasrom/meeting-transcriber/tree/main/app/MeetingTranscriber/Tests/Fixtures);
+the four-voice sample is an AMI ES2004a excerpt (CC BY 4.0).
+`tools/download-diarizer.py` can prepare the approximately 21 MB model cache.
 
 ## Transcription
 

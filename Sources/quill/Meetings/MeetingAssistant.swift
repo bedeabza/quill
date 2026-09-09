@@ -6,6 +6,7 @@ final class MeetingAssistant {
     var onStart: (() -> Bool)?
     var onStop: (() -> Void)?
     var onStatus: ((String, Bool) -> Void)?
+    var onSpeakers: ((SpeakerObservation) -> Void)?
     private var policy = MeetingPolicy()
     private let scanner = MeetingScanner()
     private var timer: Timer?
@@ -83,11 +84,21 @@ final class MeetingAssistant {
         scanning = true
         let apps = MeetingApp.running()
         Task { [weak self, scanner] in
-            let scan = await scanner.scan(apps: apps)
+            let recordingSpeakers = self?.policy.recording == true && Config.speakerDetection()
+            let scan = await scanner.scan(apps: apps, captureSpeakers: recordingSpeakers,
+                                          enableCaptions: recordingSpeakers && Config.autoMeetingCaptions(),
+                                          captionMeetingID: self?.policy.recordingMeeting?.id)
             guard let self else { return }
             self.scanning = false
             guard self.enabled else { return }
             let action = self.policy.update(scan.observations, now: ProcessInfo.processInfo.systemUptime)
+            if let meeting = self.policy.recordingMeeting, let names = scan.speakers[meeting.id] {
+                self.onSpeakers?(SpeakerObservation(observed_at: scan.speakerObservedAt[meeting.id] ?? scan.observedAt,
+                                                    meeting_id: meeting.id, names: names))
+            }
+            for caption in scan.captions where caption.meeting_id == self.policy.recordingMeeting?.id {
+                self.onSpeakers?(caption)
+            }
             if scan.needsPermission {
                 self.report("Meeting detection needs Accessibility permission", true)
                 return
