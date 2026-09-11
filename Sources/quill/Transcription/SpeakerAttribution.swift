@@ -41,6 +41,11 @@ enum SpeakerAttribution {
         return name
     }
 
+    static func isLocalName(_ name: String, localName: String?) -> Bool {
+        guard let localName = cleanName(localName) else { return false }
+        return name.trimmingCharacters(in: .whitespacesAndNewlines).caseInsensitiveCompare(localName) == .orderedSame
+    }
+
     /// Require sustained, unambiguous observations in the middle of speech.
     /// UI indicators lag audio at turn boundaries, so discard those samples.
     static func names(turns: [SpeakerTurn], observations: [SpeakerObservation], audioStartedAt: Double) -> [String: SpeakerIdentity] {

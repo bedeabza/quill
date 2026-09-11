@@ -1,9 +1,12 @@
 # quill
 
-A minimal, fully local macOS meeting recorder + transcriber. One menu-bar
+A minimal macOS meeting recorder + transcriber. One menu-bar
 click records your mic and all system audio as two separate tracks; when you
-stop, quill transcribes both on-device and writes a speaker-tagged transcript.
-Nothing ever leaves the machine.
+stop, Quill transcribes both and writes a speaker-tagged transcript.
+Choose local Parakeet v3 or cloud transcription with ElevenLabs Scribe v2.
+Parakeet remains the default; selecting ElevenLabs uploads audio to its API.
+Optional transcript cleanup uses your signed-in Codex or Claude Code CLI and
+sends transcript text to its cloud provider.
 
 Named for the feather. Sibling of [parrot](https://github.com/digimata/parrot), now packaged as a native macOS
 menu-bar app with its own identity, icon, and notification permissions.
@@ -83,6 +86,67 @@ Two tracks keep your microphone separate from remote audio. Quill now runs
 speaker diarization on the remote track and aligns speakers to individual
 word timestamps. CAF needs no finalization pass, so audio already written
 remains readable if the process exits unexpectedly.
+
+## Optional transcript cleanup
+
+The menu's **Transcript cleanup (cloud)** submenu offers **Off** (the default),
+**Automatic**, **Codex (ChatGPT account)**, and **Claude Code**. It processes new
+completed recordings before the archive hook runs. The existing transcription
+and archive flow continues when cleanup is off, no compatible signed-in CLI is
+available, a provider fails, output fails validation, or the run times out.
+
+This uses the installed `codex` or `claude` command-line harness and its saved
+sign-in. Installing only the ChatGPT or Claude desktop chat app is insufficient.
+Automatic prefers a compatible signed-in harness associated with an open app;
+Codex wins a tie. Otherwise it checks Codex, then Claude Code. An explicit choice
+never falls back to the other provider, and a failed model request is not resent
+to another provider. Quill never installs a harness or prompts you to sign in.
+
+Enabling this option sends transcript text, speaker labels, and any configured
+glossary to the selected harness's cloud provider and uses that account's limits.
+It is not local model inference. New runs use the setting in effect after local
+transcription finishes; changing the setting does not retract a request already
+sent. The CLI's normal default model is used. No additional API key is required.
+
+Corrections are constrained to small text edits. Segment boundaries, timestamps,
+IDs, existing names, numeric values, and explicit English/Romanian negations are
+preserved. A failed validation rejects the whole response. These checks reduce
+unwanted rewriting but cannot prove every correction is accurate. Speaker-name
+suggestions require cited transcript evidence and are saved for review only;
+they never automatically replace unknown speaker labels.
+
+A successful edit keeps exact originals under `postprocess-backup-<id>/`, updates
+`transcript.json` and `transcript.md`, and records edits, speaker suggestions,
+provider, and input/output hashes in `postprocess.json`. Repeating a successful
+run on the same transcript skips it. The one-off command does not run the archive
+hook. Existing recordings are not automatically submitted when cleanup is enabled.
+
+```sh
+quill postprocess status
+quill postprocess configure --mode auto
+quill postprocess configure --mode off
+quill postprocess run /path/to/completed/recording --harness claude
+```
+
+For a domain glossary or a different timeout, add this to the existing config:
+
+```json
+{
+  "post_processing": {
+    "mode": "off",
+    "timeout_seconds": 120,
+    "glossary": ["YAROOMS", "Yarvis"]
+  }
+}
+```
+
+Timeouts are bounded to 10–600 seconds per model run. Inputs over 300 KB or 5,000
+segments are skipped. Raw transcription, including `quill transcribe --offline`,
+never invokes a cloud harness. Codex requires `exec --ignore-user-config`,
+`--ephemeral`, and structured output support; Claude Code requires `--safe-mode`
+and structured output support. Unsupported older CLIs are skipped. Background
+harness runs use a private temporary directory, restrict tools and customizations,
+disable session persistence, and terminate the subprocess group on timeout.
 
 ## Speaker names
 
@@ -217,8 +281,51 @@ with macOS's Samantha and Ioana voices and checks English, Romanian (including
 diacritics), and switching back to English on the same engine. The regular
 `swift test` suite skips this model-dependent test.
 
-The engine sits behind a small protocol; a Whisper engine (WhisperKit
-large-v3-turbo) is planned as the fallback / re-transcription option.
+Use **Quill menu > Transcription engine** to choose **Parakeet v3 (local)**
+or **ElevenLabs Scribe v2 (cloud)**. The choice is saved and applies to the next
+transcription job, including pending recordings. Both tracks of a running job
+use the same engine. There is no silent engine fallback.
+
+Set or change your ElevenLabs key from **Quill menu > ElevenLabs API key...**.
+The entry field is masked and the key is stored encrypted in **macOS Keychain**,
+separately from configuration, recordings, and the app bundle. The app reads it
+only when transcription needs it; it is never written to logs or JSON config.
+The key is not synchronized through iCloud. The menu also supports removing it.
+Quill uses the login Keychain's normal macOS access control.
+
+ElevenLabs uses `scribe_v2`, automatic language detection, and word timestamps.
+It uploads each track separately after converting it to 16 kHz mono WAV.
+Speaker separation and name attribution then run locally, followed by the
+selected transcript cleanup mode and finally the archive hook. Standard
+ElevenLabs account billing and request retention settings apply.
+
+API failures leave the session pending. Successful responses are saved as
+`elevenlabs-mic.caf.json` and `elevenlabs-system.caf.json` alongside the recording,
+keyed by the original audio checksum and model. This lets a resumed session
+reuse a completed track without uploading it again. No key is included in
+those caches. A network failure after the service accepted a request can still
+require a billed retry; the API does not provide exactly-once delivery here.
+
+```bash
+quill transcription status
+quill transcription key set                  # hidden terminal prompt
+quill transcription key set --stdin          # key supplied through stdin
+quill transcription configure --engine elevenlabs
+quill transcription configure --engine parakeet
+quill transcription key remove
+quill transcribe ~/Recordings/SESSION --engine elevenlabs --output /tmp/scribe-preview
+```
+
+Never pass an API key as a command-line argument. The per-run `--engine` option
+does not change the saved selection. Standalone `transcribe` runs neither
+cleanup nor archive publication; use `quill postprocess run` to test cleanup
+on its output. Completed automatic recordings already follow that sequence.
+`--offline` rejects ElevenLabs before any upload and requires cached models
+with Parakeet. A missing key leaves recording and the settings menu available.
+
+Whisper has been removed from the app and build. Existing `whisper_cpp` settings
+resolve to local Parakeet until another engine is selected; upgrading never
+silently enables cloud uploads. Historical transcripts keep their provenance.
 
 ## Config
 
@@ -235,6 +342,7 @@ Optional, at `~/.config/quill/config.json`:
 - `recordings_dir` — where sessions land. Resolution order: `--out` flag >
   config > `~/Recordings`.
 - `transcription.enabled` — set `false` to just record.
+- `transcription.engine`: `parakeet` (local default) or `elevenlabs` (uploads audio); also selectable from the menu.
 - `mic_voice_processing` — Apple's echo cancellation on the mic (default off).
   Set `true` when recording meetings through the speakers, so playback doesn't
   bleed into the mic track and get transcribed twice as "me". The trade: while
@@ -309,7 +417,7 @@ quill install --uninstall
   per-process picker if it bothers you).
 - If recordings come out silent, check System Settings → Privacy & Security →
   Screen & System Audio Recording.
-- Parakeet v2 is English-only. Other languages will come with the Whisper
-  engine.
+- Both current engines recognize English and Romanian automatically. Transcript
+  cleanup can correct wording, but still requires review for names and ambiguous speech.
 - The app bundle provides Quill's identity and permission descriptions. Local
   ad-hoc-signed rebuilds may require refreshing Quill's Accessibility entry.

@@ -57,6 +57,7 @@ actor MeetingScanner {
         var tab: AXUIElement?
         var document: AXUIElement?
         let code: String?
+        let isBrowser: Bool
     }
     private struct Node {
         let element: AXUIElement
@@ -75,6 +76,9 @@ actor MeetingScanner {
         let element: AXUIElement
         var nodes: [Node]
         let complete: Bool
+        let startedAt: Double
+        let endedAt: Double
+        var documents: [AXUIElement: Window] = [:]
     }
     private var known: [String: Known] = [:]
     private var serial = 0
@@ -90,6 +94,7 @@ actor MeetingScanner {
         let kind: SpeakerUITileKind
     }
     private var tiles: [String: [CachedTile]] = [:]
+    private var speakerRefresh: [String: SpeakerTreeRefresh<AXUIElement>] = [:]
     private var zoomVideos: [String: [AXUIElement]] = [:]
     private let zoomDetector = ZoomWindowSpeakerDetector()
     private var zoomScores: [String: [String: Double]] = [:]
@@ -101,9 +106,18 @@ actor MeetingScanner {
     /// rather than walking every browser window four times per second.
     func speakerActivity(for meetingID: String) async -> SpeakerObservation? {
         guard AXIsProcessTrusted(), let entry = known[meetingID], !bool(entry.window, kAXMinimizedAttribute) else { return nil }
+        if let tab = entry.tab, !bool(tab, kAXValueAttribute) && !bool(tab, kAXSelectedAttribute) {
+            invalidateSpeakerTiles(meetingID)
+            return nil
+        }
+        refreshSpeakerTiles(entry)
+        guard speakerRefresh[meetingID]?.isFresh(at: ProcessInfo.processInfo.systemUptime) == true else { return nil }
         if entry.meeting.service == "Zoom", let controls = zoomVideos[meetingID], !controls.isEmpty {
             zoomScores.removeValue(forKey: meetingID)
-            guard let windowFrame = frame(entry.window), let before = zoomSnapshots(controls) else { return nil }
+            guard let windowFrame = frame(entry.window), let before = zoomSnapshots(controls) else {
+                invalidateSpeakerTiles(meetingID)
+                return nil
+            }
             guard let sample = await zoomDetector.sample(meetingID: meetingID, pid: entry.pid, frame: windowFrame, videos: before),
                   frame(entry.window) == windowFrame, zoomSnapshots(controls) == before else { return nil }
             zoomScores[meetingID] = sample.scores
@@ -111,19 +125,83 @@ actor MeetingScanner {
         }
         guard
               let cached = tiles[meetingID], !cached.isEmpty else { return nil }
-        if let tab = entry.tab, !bool(tab, kAXValueAttribute) && !bool(tab, kAXSelectedAttribute) { return nil }
         let started = Date().timeIntervalSince1970
         var names: [String] = []
+        let localName = Config.localSpeakerName()
         for tile in cached {
-            guard !isDestroyed(tile.indicator), SpeakerAttribution.cleanName(string(tile.nameElement, kAXValueAttribute)) == tile.name else { return nil }
+            guard !isDestroyed(tile.indicator), SpeakerAttribution.cleanName(string(tile.nameElement, kAXValueAttribute)) == tile.name else {
+                invalidateSpeakerTiles(meetingID)
+                return nil
+            }
             let classes = Set(strings(tile.indicator, "AXDOMClassList"))
-            guard tile.kind.recognizes(classes) else { return nil }
-            if !tile.isLocal && tile.kind.isSpeaking(classes) { names.append(tile.name) }
+            guard tile.kind.recognizes(classes) else {
+                invalidateSpeakerTiles(meetingID)
+                return nil
+            }
+            let isLocal = tile.isLocal || SpeakerAttribution.isLocalName(tile.name, localName: localName)
+                || (tile.kind == .meet && classes.contains("eQJ1qd"))
+            if !isLocal && tile.kind.isSpeaking(classes) { names.append(tile.name) }
         }
         let ended = Date().timeIntervalSince1970
         guard ended - started <= 0.2 else { return nil }
         return SpeakerObservation(observed_at: (started + ended) / 2, meeting_id: meetingID,
                                   names: Array(Set(names)).sorted(), source: "meeting_tile")
+    }
+
+    private func invalidateSpeakerTiles(_ id: String) {
+        tiles.removeValue(forKey: id)
+        zoomVideos.removeValue(forKey: id)
+        speakerRefresh[id]?.invalidate()
+    }
+
+    private func refreshSpeakerTiles(_ entry: Known) {
+        let id = entry.meeting.id
+        if let tab = entry.tab, !bool(tab, kAXValueAttribute) && !bool(tab, kAXSelectedAttribute) {
+            invalidateSpeakerTiles(id)
+            return
+        }
+        guard let root = entry.isBrowser ? entry.document : entry.window,
+              !isDestroyed(root) else {
+            invalidateSpeakerTiles(id)
+            return
+        }
+        let now = ProcessInfo.processInfo.systemUptime
+        let deadline = now + 0.04
+        var refresh = speakerRefresh[id] ?? SpeakerTreeRefresh<AXUIElement>()
+        let snapshot = refresh.step(root: root, now: now, hasTime: { ProcessInfo.processInfo.systemUptime < deadline }) { element, parent in
+            let role = string(element, kAXRoleAttribute)
+            guard !role.isEmpty, let descendants = children(element, attribute: kAXChildrenAttribute) else { return nil }
+            var text = ""
+            if role == kAXStaticTextRole { text = string(element, kAXValueAttribute) }
+            else if role == "AXMenuItem" {
+                text = string(element, kAXTitleAttribute) + " " + string(element, kAXDescriptionAttribute)
+            }
+            let node = SpeakerUINode(parent: parent, role: role, text: text,
+                                     classes: Set(strings(element, "AXDOMClassList")),
+                                     subrole: role == "AXGroup" ? string(element, kAXSubroleAttribute) : "",
+                                     roleDescription: entry.meeting.service == "Zoom" ? string(element, kAXRoleDescriptionAttribute).lowercased() : "")
+            return (node, descendants)
+        }
+        speakerRefresh[id] = refresh
+        if !refresh.isFresh(at: now) {
+            tiles.removeValue(forKey: id)
+            zoomVideos.removeValue(forKey: id)
+        }
+        guard let snapshot else { return }
+        let nodes = snapshot.map(\.node)
+        let detected: [SpeakerUITile]
+        switch entry.meeting.service {
+        case "Google Meet": detected = MeetTileEvidence.tiles(nodes)
+        case "Microsoft Teams": detected = TeamsTileEvidence.tiles(nodes)
+        default: detected = []
+        }
+        tiles[id] = detected.map {
+            CachedTile(indicator: snapshot[$0.indicatorIndex].element, nameElement: snapshot[$0.nameIndex].element,
+                       name: $0.name, isLocal: $0.isLocal, kind: $0.kind)
+        }
+        if entry.meeting.service == "Zoom" {
+            zoomVideos[id] = snapshot.filter { $0.node.role == "AXTabGroup" && $0.node.roleDescription == "video render" }.map(\.element)
+        }
     }
 
     func scan(apps: [MeetingApp], captureSpeakers: Bool = false, enableCaptions: Bool = false, inspectBoxes: Bool = false,
@@ -157,7 +235,7 @@ actor MeetingScanner {
                         let existing = known.values.first { $0.pid == app.pid && CFEqual($0.window, window.element) }
                         let id = existing?.meeting.id ?? nextID(pid: app.pid)
                         known[id] = Known(meeting: DetectedMeeting(id: id, app: app.name, service: service),
-                                          pid: app.pid, window: window.element, tab: nil, document: nil, code: nil)
+                                          pid: app.pid, window: window.element, tab: nil, document: nil, code: nil, isBrowser: false)
                     }
                     continue
                 }
@@ -177,7 +255,7 @@ actor MeetingScanner {
                     let tab = matchingTab ?? existing?.tab
                     known[id] = Known(meeting: DetectedMeeting(id: id, app: app.name, service: service),
                                       pid: app.pid, window: window.element, tab: tab,
-                                      document: node.isTab ? existing?.document : node.element, code: code)
+                                      document: node.isTab ? existing?.document : node.element, code: code, isBrowser: true)
                 }
             }
 
@@ -195,18 +273,26 @@ actor MeetingScanner {
                     // Browser windows may contain several calls. Read only the
                     // established meeting document, never names from another tab.
                     let nodes: [Node]
-                    let captureStarted = Date().timeIntervalSince1970
-                    if app.service != nil { nodes = readTree(entry.window, skipWebContent: false, readClasses: true).nodes }
+                    var captureStarted = Date().timeIntervalSince1970
+                    var captureEnded: Double?
+                    if !inspectBoxes && !enableCaptions {
+                        // Reuse the scoped lifecycle snapshot for explicit active
+                        // labels. Tile discovery has its own incremental reader.
+                        let captured = entry.isBrowser ? entry.document.flatMap { window.documents[$0] } : window
+                        nodes = captured?.nodes ?? []
+                        captureStarted = captured?.startedAt ?? captureStarted
+                        captureEnded = captured?.endedAt
+                    } else if app.service != nil { nodes = readTree(entry.window, skipWebContent: false, readClasses: true).nodes }
                     else if let document = entry.document, !isDestroyed(document),
                             window.nodes.contains(where: { $0.role == "AXWebArea" && CFEqual($0.element, document) }),
                             entry.tab.map({ tab in window.nodes.contains(where: { $0.isTab && $0.selected && CFEqual($0.element, tab) }) }) ?? true {
                         nodes = readTree(document, skipWebContent: false, readClasses: true).nodes
                     } else { nodes = [] }
-                    let captureEnded = Date().timeIntervalSince1970
+                    let observedEnd = captureEnded ?? Date().timeIntervalSince1970
                     result.speakerCaptureStatus[entry.meeting.id] = "\(nodes.count) nodes; \(nodes.filter { $0.text == "Captions" }.count) caption regions"
-                    result.speakers[entry.meeting.id] = captureEnded - captureStarted <= 0.8
+                    result.speakers[entry.meeting.id] = observedEnd - captureStarted <= 0.8
                         ? Array(Set(nodes.compactMap(\.activeSpeaker))).sorted() : []
-                    result.speakerObservedAt[entry.meeting.id] = (captureStarted + captureEnded) / 2
+                    result.speakerObservedAt[entry.meeting.id] = (captureStarted + observedEnd) / 2
                     if inspectBoxes {
                         result.speakerBoxes[entry.meeting.id] = nodes.prefix(700).enumerated().map { index, node in
                             var value: CFTypeRef?
@@ -242,21 +328,11 @@ actor MeetingScanner {
                             return row
                         }
                     }
-                    let tileNodes = nodes.map { SpeakerUINode(parent: $0.parentIndex, role: $0.role, text: $0.text, classes: Set($0.classNames), subrole: $0.subrole) }
-                    let detectedTiles: [SpeakerUITile]
-                    switch entry.meeting.service {
-                    case "Google Meet": detectedTiles = MeetTileEvidence.tiles(tileNodes)
-                    case "Microsoft Teams": detectedTiles = TeamsTileEvidence.tiles(tileNodes)
-                    default: detectedTiles = []
-                    }
-                    tiles[entry.meeting.id] = detectedTiles.map {
-                            CachedTile(indicator: nodes[$0.indicatorIndex].element, nameElement: nodes[$0.nameIndex].element,
-                                       name: $0.name, isLocal: $0.isLocal, kind: $0.kind)
-                    }
-                    result.speakerCaptureStatus[entry.meeting.id, default: ""] += "; \(detectedTiles.count) speaker tiles"
+                    refreshSpeakerTiles(entry)
+                    let tileCount = tiles[entry.meeting.id]?.count ?? 0
+                    result.speakerCaptureStatus[entry.meeting.id, default: ""] += "; \(tileCount) speaker tiles; discovery \(speakerRefresh[entry.meeting.id]?.isFresh(at: ProcessInfo.processInfo.systemUptime) == true ? "current" : "refreshing")"
                     if entry.meeting.service == "Zoom" {
-                        let videos = nodes.filter { $0.role == "AXTabGroup" && $0.roleDescription == "video render" }.map(\.element)
-                        zoomVideos[entry.meeting.id] = videos
+                        let videos = zoomVideos[entry.meeting.id] ?? []
                         result.speakerCaptureStatus[entry.meeting.id] = "\(videos.count) native Zoom video tiles"
                         if !videos.isEmpty && Config.zoomVisualSpeakerDetection() && !ZoomWindowSpeakerDetector.hasPermission {
                             result.needsZoomScreenPermission = true
@@ -319,8 +395,8 @@ actor MeetingScanner {
         let now = ProcessInfo.processInfo.systemUptime
         for (id, observation) in result.observations {
             if observation == .ended {
-                tiles.removeValue(forKey: id)
-                zoomVideos.removeValue(forKey: id)
+                invalidateSpeakerTiles(id)
+                speakerRefresh.removeValue(forKey: id)
                 zoomScores.removeValue(forKey: id)
                 if endedSince[id] == nil { endedSince[id] = now }
                 // Longer than the stop countdown; never prune uncertain meetings.
@@ -353,13 +429,16 @@ actor MeetingScanner {
         if browser {
             let documents = result.nodes.filter { $0.role == "AXWebArea" }
             for document in documents where MeetingEvidence.service(url: document.url) != nil || MeetingEvidence.meetCode(in: document.text) != nil {
-                result.nodes.append(contentsOf: readTree(document.element, skipWebContent: false).nodes.dropFirst())
+                let contents = readTree(document.element, skipWebContent: false)
+                result.documents[document.element] = contents
+                result.nodes.append(contentsOf: contents.nodes.dropFirst())
             }
         }
         return result
     }
 
     private func readTree(_ window: AXUIElement, skipWebContent: Bool, readClasses: Bool = false) -> Window {
+        let startedAt = Date().timeIntervalSince1970
         var nodes: [Node] = []
         var queue: [(AXUIElement, Int?)] = [(window, nil)]
         var visited: Set<CFHashCode> = []
@@ -393,7 +472,8 @@ actor MeetingScanner {
                 queue.append(contentsOf: childElements.reversed().map { ($0, nodes.count - 1) })
             } else { complete = false }
         }
-        return Window(element: window, nodes: nodes, complete: complete)
+        return Window(element: window, nodes: nodes, complete: complete,
+                      startedAt: startedAt, endedAt: Date().timeIntervalSince1970)
     }
 
     private func string(_ element: AXUIElement, _ attribute: String) -> String {

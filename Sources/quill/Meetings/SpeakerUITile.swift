@@ -7,6 +7,7 @@ struct SpeakerUINode {
     let classes: Set<String>
     var subrole: String = ""
     var identifier: String = ""
+    var roleDescription: String = ""
 }
 
 enum SpeakerUITileKind {

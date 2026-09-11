@@ -7,8 +7,8 @@ import Foundation
 struct Quill: ParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "quill",
-        abstract: "Local meeting recorder + transcriber. Records mic and system audio as two tracks, then transcribes on-device.",
-        subcommands: [Run.self, Doctor.self, Install.self, Meetings.self, Notifications.self, Transcribe.self, Speakers.self],
+        abstract: "Meeting recorder + transcriber. Records mic and system audio, then transcribes locally or with ElevenLabs.",
+        subcommands: [Run.self, Doctor.self, Install.self, Meetings.self, Notifications.self, Transcribe.self, Transcription.self, Speakers.self, Postprocess.self],
         defaultSubcommand: Run.self
     )
 }
@@ -286,6 +286,8 @@ final class AppController: NSObject, NSApplicationDelegate {
             menuBar.updateTranscription(
                 queued > 0 ? "transcribing \(name) · \(queued) queued" : "transcribing \(name)"
             )
+        case .postprocessing(let name, let queued):
+            menuBar.updateTranscription(queued > 0 ? "cleaning transcript \(name) · \(queued) queued" : "cleaning transcript \(name)")
         case .failed(let name):
             menuBar.updateTranscription("transcription failed · \(name)")
         }

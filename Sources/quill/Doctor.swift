@@ -77,7 +77,7 @@ enum DoctorReport {
     }
 
     /// Never discover a missing model after an important meeting: report
-    /// whether the parakeet models are already in FluidAudio's cache.
+    /// whether the selected engine and model are available.
     static func checkTranscription() -> Check {
         guard Config.transcriptionEnabled() else {
             return Check(
@@ -85,6 +85,16 @@ enum DoctorReport {
                 status: .warn("disabled in config"),
                 remediation: nil
             )
+        }
+        guard let kind = TranscriptionEngineKind(rawValue: Config.transcriptionEngine()) else {
+            return Check(name: "transcription", status: .fail("unknown engine: \(Config.transcriptionEngine())"),
+                         remediation: "choose an engine from Quill's Transcription engine menu")
+        }
+        if kind == .elevenLabs {
+            let saved = ElevenLabsKeychain.shared.containsKey()
+            // Keep recording and the menu available while the user supplies a key.
+            return Check(name: "transcription", status: saved ? .ok : .warn("ElevenLabs API key not saved"),
+                         remediation: saved ? nil : "Quill menu > ElevenLabs API key...; recordings are retained until transcription is available")
         }
         let cache = AsrModels.defaultCacheDirectory(for: ParakeetEngine.modelVersion)
         if AsrModels.modelsExist(at: cache, version: ParakeetEngine.modelVersion) {

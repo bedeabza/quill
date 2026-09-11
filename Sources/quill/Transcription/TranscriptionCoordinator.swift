@@ -11,14 +11,26 @@ actor TranscriptionCoordinator {
     enum Status: Sendable {
         case idle
         case transcribing(session: String, queued: Int)
+        case postprocessing(session: String, queued: Int)
         case failed(session: String)
     }
 
     private var queue: [URL] = []
     private var draining = false
     private var engine: TranscriptionEngine?
+    private var engineOffline = false
+    private let makeEngine: @Sendable (TranscriptionEngineKind, Bool) -> any TranscriptionEngine
     private var lastFailure: String?
     private var statusHandler: (@Sendable (Status) -> Void)?
+
+    init(makeEngine: @escaping @Sendable (TranscriptionEngineKind, Bool) -> any TranscriptionEngine = { kind, offline in
+        switch kind {
+        case .parakeet: return ParakeetEngine()
+        case .elevenLabs: return ElevenLabsEngine(offline: offline)
+        }
+    }) {
+        self.makeEngine = makeEngine
+    }
 
     func setStatusHandler(_ handler: @escaping @Sendable (Status) -> Void) {
         statusHandler = handler
@@ -77,6 +89,10 @@ actor TranscriptionCoordinator {
             publish(.transcribing(session: dir.lastPathComponent, queued: queue.count))
             do {
                 try await transcribe(dir)
+                let cleanupOptions = Config.postProcessing()
+                if cleanupOptions.mode != .off { publish(.postprocessing(session: dir.lastPathComponent, queued: queue.count)) }
+                let cleanup = await TranscriptPostProcessor.process(dir, options: cleanupOptions)
+                log(dir, "postprocess: \(cleanup.status)")
                 notifyUser(title: "quill — transcript ready", body: dir.lastPathComponent)
                 runHook(for: dir)
             } catch {
@@ -97,9 +113,11 @@ actor TranscriptionCoordinator {
         drainIfIdle()
     }
 
-    func transcribe(_ dir: URL, detectSpeakers: Bool = Config.speakerDetection(), remoteSpeakerCount: Int? = nil) async throws {
+    func transcribe(_ dir: URL, detectSpeakers: Bool = Config.speakerDetection(), remoteSpeakerCount: Int? = nil,
+                    engineOverride: TranscriptionEngineKind? = nil, offline: Bool = false) async throws {
         let meta = try SessionMeta.read(from: dir)
-        let engine = try await preparedEngine()
+        // Snapshot the selection for both tracks. Menu changes affect the next job.
+        let engine = try await preparedEngine(kind: engineOverride, offline: offline)
         let observationURL = dir.appendingPathComponent("speaker-observations.jsonl")
         let observations = ((try? String(contentsOf: observationURL, encoding: .utf8)) ?? "")
             .split(separator: "\n").compactMap { try? JSONDecoder().decode(SpeakerObservation.self, from: Data($0.utf8)) }
@@ -107,6 +125,7 @@ actor TranscriptionCoordinator {
         var merged: [Transcript.Segment] = []
         var analysis = SpeakerAnalysis(turns: [], names: [:])
         var speakerStatus: [String: String] = [:]
+        var successfulTracks = 0
         for track in meta.tracks {
             let audio = dir.appendingPathComponent(track.file)
             guard FileManager.default.fileExists(atPath: audio.path) else {
@@ -119,7 +138,11 @@ actor TranscriptionCoordinator {
             let segments: [TranscriptSegment]
             do {
                 segments = try await engine.transcribe(audio)
+                successfulTracks += 1
             } catch {
+                // Cloud failures must not publish a partial meeting as complete.
+                // Successful tracks have their own cache for the next attempt.
+                if engine.name == TranscriptionEngineKind.elevenLabs.rawValue { throw error }
                 log(dir, "skipping \(track.file): \(error)")
                 continue
             }
@@ -161,6 +184,9 @@ actor TranscriptionCoordinator {
                 )
             }
         }
+        guard successfulTracks > 0 else {
+            throw TranscriptionFailure("No audio track could be transcribed. See transcribe.log; the session remains pending.")
+        }
         merged.sort { $0.start_ms < $1.start_ms }
 
         let transcript = Transcript(
@@ -178,18 +204,19 @@ actor TranscriptionCoordinator {
         log(dir, "done — \(merged.count) segments")
     }
 
-    private func preparedEngine() async throws -> TranscriptionEngine {
-        if let engine { return engine }
-        let configured = Config.transcriptionEngine()
-        if configured != "parakeet" {
-            FileHandle.standardError.write(Data(
-                "warning: unknown transcription engine \"\(configured)\" — using parakeet\n".utf8
-            ))
+    private func preparedEngine(kind override: TranscriptionEngineKind?, offline: Bool) async throws -> TranscriptionEngine {
+        guard let kind = override ?? TranscriptionEngineKind(rawValue: Config.transcriptionEngine()) else {
+            throw TranscriptionFailure("Unknown transcription engine: \(Config.transcriptionEngine()). Choose an engine from the Quill menu.")
         }
-        let engine = ParakeetEngine()
-        try await engine.prepare()
-        self.engine = engine
-        return engine
+        if let engine, engine.name == kind.rawValue, engineOffline == offline { return engine }
+        await engine?.release()
+        engine = nil
+        let next = makeEngine(kind, offline)
+        do { try await next.prepare() }
+        catch { await next.release(); throw error }
+        engine = next
+        engineOffline = offline
+        return next
     }
 
     /// Fires the configured on_stop shell command with the session directory
@@ -275,12 +302,12 @@ struct SessionMeta {
 
 /// Canonical transcript. Property names are the JSON schema — this struct
 /// exists to be serialized.
-struct Transcript: Codable {
-    struct Segment: Codable {
+struct Transcript: Codable, Sendable {
+    struct Segment: Codable, Sendable {
         let speaker: String
         let start_ms: Int
         let end_ms: Int
-        let text: String
+        var text: String
         var source: String? = nil
         var speaker_name: String? = nil
         var attribution: String? = nil

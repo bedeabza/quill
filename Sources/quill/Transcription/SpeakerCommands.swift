@@ -3,12 +3,13 @@ import Foundation
 import FluidAudio
 
 struct Transcribe: ParsableCommand {
-    static let configuration = CommandConfiguration(abstract: "Transcribe a completed recording locally, without running the archive hook.")
+    static let configuration = CommandConfiguration(abstract: "Transcribe a completed recording with the selected engine, without running cleanup or the archive hook.")
     @Argument(help: "Completed recording folder containing meta.json and audio.") var recording: String
     @Option(help: "Write a disposable preview into a new folder, leaving the recording unchanged.") var output: String?
     @Flag(help: "Replace an existing transcript. Speaker IDs and manual names will be regenerated.") var force = false
     @Flag(help: "Skip speaker separation.") var noSpeakers = false
-    @Flag(help: "Require cached models and prevent network downloads.") var offline = false
+    @Flag(help: "Require cached local models. Reject cloud transcription and prevent downloads.") var offline = false
+    @Option(help: "Use parakeet (local) or elevenlabs (uploads audio) for this run without changing the menu setting.") var engine: TranscriptionEngineKind?
     @Option(help: "Known number of speaking people on the remote audio track. Normally inferred automatically.") var remoteSpeakers: Int?
 
     func run() throws {
@@ -26,6 +27,9 @@ struct Transcribe: ParsableCommand {
     private func transcribe() async throws {
         if let remoteSpeakers, remoteSpeakers < 1 || remoteSpeakers > 100 {
             throw ValidationError("Remote speaker count must be between 1 and 100.")
+        }
+        if offline && (engine?.rawValue ?? Config.transcriptionEngine()) == "elevenlabs" {
+            throw ValidationError("ElevenLabs requires uploading audio. Use --engine parakeet with --offline.")
         }
         if offline { ModelHub.offlineMode = true }
         let original = URL(fileURLWithPath: (recording as NSString).expandingTildeInPath).standardizedFileURL
@@ -48,7 +52,8 @@ struct Transcribe: ParsableCommand {
                 throw ValidationError("Transcript already exists. Use --output for a preview or --force to regenerate it.")
             }
         }
-        try await TranscriptionCoordinator().transcribe(dir, detectSpeakers: !noSpeakers, remoteSpeakerCount: remoteSpeakers)
+        try await TranscriptionCoordinator().transcribe(dir, detectSpeakers: !noSpeakers, remoteSpeakerCount: remoteSpeakers,
+                                                        engineOverride: engine, offline: offline)
         print(dir.appendingPathComponent("transcript.md").path)
     }
 }

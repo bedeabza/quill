@@ -1,5 +1,17 @@
 # Speaker names validation
 
+## Continuous speaker discovery update, 2026-09-10
+
+A completed 28-minute call retained tile observations only between 26 and 85 seconds. The saved observations cannot establish the exact UI failure or identify the later unnamed speech. No historical transcript was relabelled.
+
+Speaker discovery now runs throughout the meeting, starting another pass two seconds after the previous pass finishes. It walks only the linked meeting document or native call window, in bounded chunks between activity samples. Large trees continue across polls instead of restarting at the old 1.5-second or 2,500-node limit. A complete pass replaces the cached names and removes departed participants. Destroyed elements, changed names, and unrecognized activity markup invalidate the cache and trigger rediscovery. Stale, incomplete, or failed discovery does not authorize a name.
+
+Meet name matching accepts additional wrappers within an individual tile but cannot cross into a container shared with another speaker indicator. The configured local display name is also excluded from remote tile attribution. Caption matching and explicit active-speaker evidence remain available; names still apply only to supported speech intervals, never every turn in an acoustic cluster.
+
+Validation: 61 Swift tests, 56 passed, 5 opt-in audio or window-capture tests skipped. This includes replay of the previously captured Meet and Teams activity states, plus 11 new regressions for late arrivals, renames, departures, large trees, chunk time limits, stale and destroyed elements, changed meeting documents, wrapped tiles, local-name exclusion, and avoiding retrospective name propagation. A real multi-person call with a late join remains to be verified.
+
+The release was packaged, signed, installed, and verified against the signed staging app. After renewing the existing macOS Accessibility entry, the running LaunchAgent resumed automatic recording and captured sustained named Teams tile observations in the live call. No recording was interrupted. The previous app is backed up at `/private/tmp/quill-speaker-refresh/Previous-Quill.app`.
+
 Validated on 2026-09-09 on the user's Apple Silicon Mac.
 
 - Full Swift suite: 33 tests, 32 passed and the opt-in language test skipped.

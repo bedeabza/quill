@@ -87,4 +87,42 @@ final class MeetTileEvidenceTests: XCTestCase {
         XCTAssertNil(SpeakerAttribution.speaker(start: 1.5, end: 1.8, turns: [alice, SpeakerTurn(speaker_id: "b", start: 0, end: 1.5)]))
         XCTAssertNil(SpeakerAttribution.speaker(start: 0, end: 20, turns: [alice]))
     }
+
+    func testLateParticipantWithWrappedIndicatorKeepsOwnName() {
+        var nodes = [node(nil), node(0), node(1, "OFfHfd"),
+                     node(2, text: "Alice", role: "AXStaticText"), node(1, "lH9pqf atLQQ")]
+        XCTAssertEqual(MeetTileEvidence.tiles(nodes).map(\.name), ["Alice"])
+        nodes += [node(0), node(5, "OFfHfd"), node(6, text: "Bob", role: "AXStaticText"),
+                  node(5), node(8, "lH9pqf atLQQ kssMZb")]
+        let tiles = MeetTileEvidence.tiles(nodes)
+        XCTAssertEqual(tiles.map(\.name), ["Alice", "Bob"])
+        XCTAssertEqual(tiles.filter { $0.kind.isSpeaking(nodes[$0.indicatorIndex].classes) }.map(\.name), ["Bob"])
+    }
+
+    func testMissingNameCannotBorrowAnotherParticipantsLabel() {
+        let nodes = [node(nil), node(0), node(1, "OFfHfd"), node(2, text: "Alice", role: "AXStaticText"),
+                     node(1, "lH9pqf atLQQ"), node(0), node(5), node(6, "lH9pqf atLQQ kssMZb")]
+        XCTAssertEqual(MeetTileEvidence.tiles(nodes).map(\.name), ["Alice"])
+    }
+
+    func testNewNameLateInMeetingDoesNotRenameEarlierUnknownVoice() {
+        let samples = [120.0, 120.25, 120.5, 120.75].map {
+            SpeakerObservation(observed_at: 1000 + $0, meeting_id: "meet", names: ["Late arrival"], source: "meeting_tile")
+        }
+        let segments = [10.25, 120.25].map {
+            TranscriptSegment(start: $0, end: $0 + 0.2, text: "Hello", words: [TranscriptWord(start: $0, end: $0 + 0.2, text: "Hello")])
+        }
+        let result = SpeakerAttribution.align(segments, turns: [SpeakerTurn(speaker_id: "system_1", start: 0, end: 130)],
+                                               source: "system", offset: 0,
+                                               namedSpans: SpeakerAttribution.tileSpans(observations: samples, audioStartedAt: 1000))
+        XCTAssertNil(result[0].speaker_name)
+        XCTAssertEqual(result[1].speaker_name, "Late arrival")
+    }
+
+    func testConfiguredLocalNameIsExcludedWithoutSelfTileClass() {
+        XCTAssertTrue(SpeakerAttribution.isLocalName("  Dragos Badea ", localName: "Dragos Badea"))
+        XCTAssertTrue(SpeakerAttribution.isLocalName("DRAGOS BADEA", localName: "Dragos Badea"))
+        XCTAssertFalse(SpeakerAttribution.isLocalName("Dragos Badea Jr", localName: "Dragos Badea"))
+        XCTAssertFalse(SpeakerAttribution.isLocalName("Alice", localName: nil))
+    }
 }

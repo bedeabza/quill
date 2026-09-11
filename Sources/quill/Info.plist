@@ -13,9 +13,9 @@
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
-    <string>1.3</string>
+    <string>1.4</string>
     <key>CFBundleVersion</key>
-    <string>4</string>
+    <string>5</string>
     <key>LSUIElement</key>
     <true/>
     <key>LSMinimumSystemVersion</key>
@@ -23,8 +23,8 @@
     <key>NSPrincipalClass</key>
     <string>NSApplication</string>
     <key>NSMicrophoneUsageDescription</key>
-    <string>quill records your microphone during meetings so you can transcribe them later. Audio never leaves this Mac.</string>
+    <string>Quill records your microphone during meetings. Transcription runs locally with Parakeet or in the cloud when you select ElevenLabs.</string>
     <key>NSAudioCaptureUsageDescription</key>
-    <string>quill records system audio (the other side of your meetings) so you can transcribe them later. Audio never leaves this Mac.</string>
+    <string>Quill records system audio during meetings. Transcription runs locally with Parakeet or in the cloud when you select ElevenLabs.</string>
 </dict>
 </plist>

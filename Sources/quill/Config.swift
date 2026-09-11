@@ -14,6 +14,25 @@ import Foundation
 /// directory as its argument — after the transcript is written, or right
 /// after recording when transcription is disabled.
 enum Config {
+    static func postProcessing() -> PostProcessingOptions {
+        PostProcessingOptions(json: load()?["post_processing"] as? [String: Any])
+    }
+
+    @discardableResult static func setPostProcessingMode(_ mode: PostProcessingMode) -> Bool {
+        let existing = load()
+        guard existing != nil || !FileManager.default.fileExists(atPath: path.path) else { return false }
+        var config = existing ?? [:]
+        var options = config["post_processing"] as? [String: Any] ?? [:]
+        options["mode"] = mode.rawValue
+        config["post_processing"] = options
+        do {
+            try FileManager.default.createDirectory(at: path.deletingLastPathComponent(), withIntermediateDirectories: true)
+            let data = try JSONSerialization.data(withJSONObject: config, options: [.prettyPrinted, .sortedKeys])
+            try data.write(to: path, options: .atomic)
+            return true
+        } catch { return false }
+    }
+
     static func speakerDetection() -> Bool { load()?["speaker_detection"] as? Bool ?? true }
     static func zoomVisualSpeakerDetection() -> Bool { load()?["zoom_visual_speaker_detection"] as? Bool ?? true }
     static func zoomLocalSpeakerName() -> String? {
@@ -66,10 +85,32 @@ enum Config {
         transcription()?["enabled"] as? Bool ?? true
     }
 
-    /// Configured engine name. Only "parakeet" ships today; the coordinator
-    /// warns and falls back for anything else.
+    /// Configured engine name. Unknown values fail explicitly during preparation.
     static func transcriptionEngine() -> String {
-        transcription()?["engine"] as? String ?? "parakeet"
+        migratedEngineName(transcription()?["engine"] as? String)
+    }
+
+    static func migratedEngineName(_ name: String?) -> String {
+        // Removing a local engine must not silently opt other users into uploading audio.
+        name == "whisper_cpp" ? "parakeet" : (name ?? "parakeet")
+    }
+
+    @discardableResult static func setTranscriptionEngine(_ engine: TranscriptionEngineKind, at url: URL = path) -> Bool {
+        do {
+            var config: [String: Any] = [:]
+            if FileManager.default.fileExists(atPath: url.path) {
+                let data = try Data(contentsOf: url)
+                guard let existing = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { return false }
+                config = existing
+            }
+            var options = config["transcription"] as? [String: Any] ?? [:]
+            options["engine"] = engine.rawValue
+            config["transcription"] = options
+            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            let data = try JSONSerialization.data(withJSONObject: config, options: [.prettyPrinted, .sortedKeys])
+            try data.write(to: url, options: .atomic)
+            return true
+        } catch { return false }
     }
 
     private static func transcription() -> [String: Any]? {
