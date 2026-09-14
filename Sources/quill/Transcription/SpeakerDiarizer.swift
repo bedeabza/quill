@@ -6,6 +6,7 @@ struct SpeakerAnalysis: Codable, Sendable {
     var turns: [SpeakerTurn]
     var names: [String: SpeakerIdentity]
     var named_spans: [NamedSpeakerSpan] = []
+    var voice_identities: [String: SpeakerIdentity]? = nil
 }
 
 enum SpeakerDiarizer {

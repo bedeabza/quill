@@ -155,14 +155,19 @@ actor TranscriptionCoordinator {
                     if let started = meta.audioStartedAt, track.source == "system" {
                         trackAnalysis.named_spans = SpeakerAttribution.nameSpans(turns: trackAnalysis.turns, observations: observations,
                                                                audioStartedAt: started + offset, segments: segments)
+                        trackAnalysis.voice_identities = SpeakerAttribution.voiceNames(turns: trackAnalysis.turns, spans: trackAnalysis.named_spans)
                         for span in trackAnalysis.named_spans {
                             trackAnalysis.names[SpeakerAttribution.namedSpeakerID(span.identity, source: track.source)] = span.identity
                         }
                     }
                     merged += SpeakerAttribution.align(segments, turns: trackAnalysis.turns, source: track.source,
-                                                       offset: offset, namedSpans: trackAnalysis.named_spans)
+                                                       offset: offset, namedSpans: trackAnalysis.named_spans,
+                                                       voiceIdentities: trackAnalysis.voice_identities)
                     analysis.turns += trackAnalysis.turns.map { SpeakerTurn(speaker_id: $0.speaker_id, start: $0.start + offset, end: $0.end + offset) }
                     analysis.names.merge(trackAnalysis.names) { _, new in new }
+                    if let identities = trackAnalysis.voice_identities {
+                        analysis.voice_identities = (analysis.voice_identities ?? [:]).merging(identities) { _, new in new }
+                    }
                     analysis.named_spans += trackAnalysis.named_spans.map { NamedSpeakerSpan(start: $0.start + offset, end: $0.end + offset, identity: $0.identity) }
                     speakerStatus[track.source] = trackAnalysis.turns.isEmpty ? "no_speech_detected" : "complete"
                     continue

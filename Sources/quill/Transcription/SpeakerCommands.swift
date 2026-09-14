@@ -59,7 +59,7 @@ struct Transcribe: ParsableCommand {
 }
 
 struct Speakers: ParsableCommand {
-    static let configuration = CommandConfiguration(abstract: "Inspect and correct speaker labels.", subcommands: [LabelSpeaker.self])
+    static let configuration = CommandConfiguration(abstract: "Inspect and correct speaker labels.", subcommands: [LabelSpeaker.self, RefreshSpeakers.self])
 }
 
 struct LabelSpeaker: ParsableCommand {

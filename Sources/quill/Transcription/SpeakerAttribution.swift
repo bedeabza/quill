@@ -91,7 +91,7 @@ enum SpeakerAttribution {
     /// Tile state is independent of caption language. Keep short, observed
     /// runs only; unknown/multiple speakers and missing samples end the run.
     static func tileSpans(observations: [SpeakerObservation], audioStartedAt: Double) -> [NamedSpeakerSpan] {
-        let samples = observations.filter { ["meeting_tile", "zoom_border"].contains($0.source) }.sorted { $0.observed_at < $1.observed_at }
+        let samples = observations.filter { ["meeting_tile", "zoom_border"].contains($0.source) && $0.is_local != true }.sorted { $0.observed_at < $1.observed_at }
         var result: [NamedSpeakerSpan] = []
         var name: String?
         var meetingID: String?
@@ -171,12 +171,112 @@ enum SpeakerAttribution {
         return "\(source)_name_\(hash)"
     }
 
+    private static func coveredDuration(_ intervals: [(Double, Double)]) -> Double {
+        var total = 0.0
+        var lastEnd = -Double.infinity
+        for (start, end) in intervals.sorted(by: { $0.0 < $1.0 }) where end > start {
+            total += max(0, end - max(start, lastEnd))
+            lastEnd = max(lastEnd, end)
+        }
+        return total
+    }
+
     private static func identity(start: Double, end: Double, spans: [NamedSpeakerSpan]) -> SpeakerIdentity? {
-        let overlapping = spans.filter { min(end, $0.end) - max(start, $0.start) >= (end - start) * 0.6 }
+        guard end > start else { return nil }
+        let overlapping = spans.filter { $0.start < end && $0.end > start }
         let exact = overlapping.filter { ["meeting_caption", "meeting_tile", "zoom_border"].contains($0.identity.source) }
         let candidates = exact.isEmpty ? overlapping : exact
-        guard end > start, Set(candidates.map { $0.identity.name }).count == 1 else { return nil }
-        return candidates.first?.identity
+        let grouped = Dictionary(grouping: candidates, by: { $0.identity.name.lowercased() })
+        let coverage = grouped.mapValues { coveredDuration($0.map { (max(start, $0.start), min(end, $0.end)) }) }
+        guard let best = coverage.max(by: { $0.value < $1.value }), best.value >= (end - start) * 0.6,
+              coverage.filter({ $0.key != best.key }).allSatisfy({ $0.value < min(0.2, (end - start) * 0.2) }) else { return nil }
+        return grouped[best.key]?.first?.identity
+    }
+
+    /// Learn a recording-local name for a voice from sustained speaking tiles,
+    /// never from captions or a participant roster. A voice can split into
+    /// several clusters, but a cluster with competing identities stays unnamed.
+    static func voiceNames(turns: [SpeakerTurn], spans: [NamedSpeakerSpan]) -> [String: SpeakerIdentity] {
+        let trusted = spans.filter {
+            ["meeting_tile", "zoom_border"].contains($0.identity.source) && $0.identity.evidence_count >= 3
+                && $0.start.isFinite && $0.end.isFinite && $0.end > $0.start
+        }
+        struct Evidence {
+            var intervals: [(Double, Double)] = []
+            var turns: Set<Int> = []
+            var spans: Set<Int> = []
+            var name = ""
+        }
+        var votes: [String: [String: Evidence]] = [:]
+        var voiceIntervals: [String: [(Double, Double)]] = [:]
+        for (turnIndex, turn) in turns.enumerated() where turn.start.isFinite && turn.end.isFinite && turn.end > turn.start {
+            voiceIntervals[turn.speaker_id, default: []].append((turn.start, turn.end))
+            for (spanIndex, span) in trusted.enumerated() {
+                let start = max(turn.start + 0.3, span.start), end = min(turn.end - 0.3, span.end)
+                guard end - start >= 0.2,
+                      !turns.contains(where: { $0.speaker_id != turn.speaker_id && $0.start < end && $0.end > start }),
+                      !trusted.contains(where: { $0.identity.name.caseInsensitiveCompare(span.identity.name) != .orderedSame
+                          && $0.start < end && $0.end > start }) else { continue }
+                let key = span.identity.name.lowercased()
+                var evidence = votes[turn.speaker_id, default: [:]][key] ?? Evidence()
+                evidence.name = span.identity.name
+                evidence.intervals.append((start, end))
+                evidence.turns.insert(turnIndex)
+                evidence.spans.insert(spanIndex)
+                votes[turn.speaker_id, default: [:]][key] = evidence
+            }
+        }
+        var result: [String: SpeakerIdentity] = [:]
+        for (id, names) in votes {
+            let durations = names.mapValues { coveredDuration($0.intervals) }
+            guard let best = durations.max(by: { $0.value < $1.value }), let evidence = names[best.key],
+                  best.value >= 10, evidence.turns.count >= 2, evidence.spans.count >= 2,
+                  best.value >= coveredDuration(voiceIntervals[id] ?? []) * 0.35,
+                  best.value >= durations.values.reduce(0, +) * 0.95,
+                  durations.filter({ $0.key != best.key }).allSatisfy({ $0.value < 2 }) else { continue }
+            result[id] = SpeakerIdentity(name: evidence.name, source: "meeting_voice", evidence_count: evidence.spans.count)
+        }
+        return result
+    }
+
+    static func resolvedIdentity(start: Double, end: Double, turns: [SpeakerTurn], spans: [NamedSpeakerSpan],
+                                 voiceNames: [String: SpeakerIdentity]) -> SpeakerIdentity? {
+        guard start.isFinite, end.isFinite, start >= 0, end >= start else { return nil }
+        // Scribe can give punctuation/short words a zero-length timestamp.
+        // Use a tiny decision window without changing the transcript timestamp.
+        let decisionEnd = max(end, start + 0.02)
+        if let exact = identity(start: start, end: decisionEnd, spans: spans) { return exact }
+        var learned: SpeakerIdentity?
+        if let id = speaker(start: start, end: decisionEnd, turns: turns), let name = voiceNames[id] {
+            learned = name
+        } else {
+            // Some ASR word intervals include silence. Resolve those only when
+            // every audible cluster has the same independently verified name.
+            let audible = turns.filter { min(decisionEnd, $0.end) - max(start, $0.start) > 0.02 }
+            let ids = Set(audible.map(\.speaker_id))
+            let names = ids.compactMap { voiceNames[$0] }
+            if decisionEnd - start <= 30, !ids.isEmpty, names.count == ids.count,
+               Set(names.map { $0.name.lowercased() }).count == 1,
+               coveredDuration(audible.map { (max(start, $0.start), min(decisionEnd, $0.end)) }) >= min(0.2, (decisionEnd - start) * 0.6) {
+                learned = names.first
+            }
+        }
+        func conflicts(_ name: String) -> Bool {
+            spans.contains { $0.identity.name.caseInsensitiveCompare(name) != .orderedSame
+                && min(decisionEnd, $0.end) - max(start, $0.start) >= min(0.2, (decisionEnd - start) * 0.2) }
+        }
+        if let learned, !conflicts(learned.name) { return learned }
+        // Very short replies can fall just before a delayed Teams border and
+        // below acoustic VAD thresholds. Use a bounded edge of a sustained tile,
+        // only when nearby UI names and audible voices are unambiguous.
+        guard decisionEnd - start <= 1.5 else { return nil }
+        let nearby = spans.filter { ["meeting_tile", "zoom_border"].contains($0.identity.source)
+            && $0.identity.evidence_count >= 3 && $0.end - $0.start >= 0.4
+            && $0.start <= min(decisionEnd + 0.5, start + 0.75) && $0.end >= start - 0.125 }
+        let audible = Set(turns.filter { min(decisionEnd, $0.end) > max(start, $0.start) }.map(\.speaker_id))
+        guard audible.count <= 1, Set(nearby.map { $0.identity.name.lowercased() }).count == 1,
+              let nearest = nearby.first?.identity, !conflicts(nearest.name) else { return nil }
+        return SpeakerIdentity(name: nearest.name, source: "meeting_tile_edge", evidence_count: nearest.evidence_count)
     }
 
     static func speaker(start: Double, end: Double, turns: [SpeakerTurn]) -> String? {
@@ -196,15 +296,22 @@ enum SpeakerAttribution {
     }
 
     static func align(_ segments: [TranscriptSegment], turns: [SpeakerTurn], source: String,
-                      offset: Double, namedSpans: [NamedSpeakerSpan]) -> [Transcript.Segment] {
+                      offset: Double, namedSpans: [NamedSpeakerSpan],
+                      voiceIdentities: [String: SpeakerIdentity]? = nil) -> [Transcript.Segment] {
         var result: [Transcript.Segment] = []
+        let learned = voiceIdentities ?? voiceNames(turns: turns, spans: namedSpans)
         for segment in segments {
             // Without word timings, only label the whole segment when every
             // audible turn agrees. Never assign a mixed sentence to its majority.
             if segment.words.isEmpty {
                 let ids = Set(turns.filter { $0.end > segment.start && $0.start < segment.end }.map(\.speaker_id))
                 let id = ids.count == 1 ? speaker(start: segment.start, end: segment.end, turns: turns) : nil
-                result.append(render(segment.start, segment.end, segment.text, id, source, offset, nil))
+                let identity = id.flatMap { learned[$0] }.flatMap { _ in
+                    resolvedIdentity(start: segment.start, end: segment.end, turns: turns, spans: namedSpans, voiceNames: learned)
+                }
+                let fallback = id.flatMap { learned[$0] == nil ? $0 : nil }
+                result.append(render(segment.start, segment.end, segment.text,
+                                     identity.map { namedSpeakerID($0, source: source) } ?? fallback, source, offset, identity))
                 continue
             }
             var words: [TranscriptWord] = []
@@ -216,11 +323,16 @@ enum SpeakerAttribution {
                 words = []
             }
             for word in segment.words {
-                let identity = identity(start: word.start, end: word.end, spans: namedSpans)
-                let id = identity.map { namedSpeakerID($0, source: source) } ?? speaker(start: word.start, end: word.end, turns: turns)
-                if !words.isEmpty && id != previous { flush() }
+                let identity = resolvedIdentity(start: word.start, end: word.end, turns: turns, spans: namedSpans, voiceNames: learned)
+                let acoustic = speaker(start: word.start, end: word.end, turns: turns)
+                // A known voice vetoed by conflicting evidence is uncertain,
+                // not a newly anonymous "Speaker 1" identity.
+                let fallback = acoustic.flatMap { learned[$0] == nil ? $0 : nil }
+                let id = identity.map { namedSpeakerID($0, source: source) } ?? fallback
+                if !words.isEmpty && id != previous { flush(); previousIdentity = nil }
                 previous = id
-                previousIdentity = identity
+                if previousIdentity?.source != "meeting_voice",
+                   previousIdentity?.source != "meeting_tile_edge" || identity?.source == "meeting_voice" { previousIdentity = identity }
                 words.append(word)
             }
             flush()

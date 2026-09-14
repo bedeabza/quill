@@ -95,7 +95,7 @@ actor ElevenLabsEngine: TranscriptionEngine {
         let words: [Word]
     }
 
-    private struct Cache: Codable {
+    struct Cache: Codable {
         let version: Int
         let model: String
         let audioSHA256: String
@@ -168,7 +168,7 @@ actor ElevenLabsEngine: TranscriptionEngine {
         return result
     }
 
-    private nonisolated static func fingerprint(_ url: URL) throws -> String {
+    nonisolated static func fingerprint(_ url: URL) throws -> String {
         let handle = try FileHandle(forReadingFrom: url)
         defer { try? handle.close() }
         var hash = SHA256()

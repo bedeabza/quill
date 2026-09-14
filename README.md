@@ -161,9 +161,14 @@ regular meeting scan, then reads their state four times per second while
 recording. This works independently of the spoken language and does not
 require Meet captions, saved transcripts, or a browser extension.
 
-Only observed speaking intervals receive names. Multiple active remote tiles,
-missing observations, very short activity, and unrecognized markup remain
-unattributed. Names never propagate to unrelated turns in an acoustic cluster.
+Recorded speaking tiles provide direct name evidence. Quill can also retain a
+name through missing tile samples when that recording's acoustic voice has at
+least 10 seconds of consistent UI evidence across multiple turns, sufficient
+coverage, and no sustained competing name. Split acoustic clusters may share
+the same verified name. Caption text alone never establishes a voice identity.
+Conflicting evidence and ambiguous overlapping voices remain unresolved.
+Short replies can use a bounded edge of a sustained speaking indicator to
+account for UI delay. Words with uncertain evidence keep an anonymous label.
 The local tile is excluded from remote naming, and changing tile names invalidate
 the cached association until the next scan. Minimized meeting windows cannot
 provide tile evidence. The Meet name and activity structure was verified in
@@ -234,6 +239,21 @@ instead of `--speaker`, explicitly confirming that all remote speech is from
 that person. This includes otherwise unknown remote segments.
 A rerun of diarization does not reuse manual names against potentially changed
 speaker IDs. Run your archive sync separately to publish a correction.
+
+Repair speaker labels from cached ElevenLabs word timestamps and recorded UI
+evidence, without uploading audio or running transcript cleanup:
+
+```sh
+quill speakers refresh /path/to/recording --output /tmp/speaker-label-preview
+quill speakers refresh /path/to/recording
+```
+
+The default reuses the saved acoustic analysis. Add `--remote-speakers 3` to
+rerun local speaker separation with a known count; compare a preview first,
+because forcing a count can merge voices. In-place refresh keeps exact backups
+and rejects edited wording or manual speaker corrections. The microphone
+segments stay unchanged, and remote word timestamps come from the original
+cache. Run your archive sync afterward to publish the repair.
 Voice recognition across meetings is deferred: the independent-utterance
 experiment did not reliably match the same voices, so this release stores no
 persistent voice profiles.
