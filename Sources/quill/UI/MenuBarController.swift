@@ -177,7 +177,8 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         alert.informativeText = "Your key is stored encrypted in macOS Keychain. Selecting ElevenLabs sends recording audio to Scribe v2 for transcription."
         alert.addButton(withTitle: "Save key")
         alert.addButton(withTitle: "Cancel")
-        let field = NSSecureTextField(frame: NSRect(x: 0, y: 0, width: 360, height: 26))
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 360, height: 26))
+        field.usesSingleLineMode = true
         field.placeholderString = "Paste your ElevenLabs API key"
         field.setAccessibilityLabel("ElevenLabs API key")
         alert.accessoryView = field

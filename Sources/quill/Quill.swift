@@ -139,6 +139,7 @@ struct Run: ParsableCommand {
 
         let app = NSApplication.shared
         app.setActivationPolicy(.accessory)
+        app.mainMenu = ApplicationMenu.make()
 
         let controller = AppController(root: root)
         app.delegate = controller

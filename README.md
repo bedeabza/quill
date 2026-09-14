@@ -287,7 +287,7 @@ transcription job, including pending recordings. Both tracks of a running job
 use the same engine. There is no silent engine fallback.
 
 Set or change your ElevenLabs key from **Quill menu > ElevenLabs API key...**.
-The entry field is masked and the key is stored encrypted in **macOS Keychain**,
+The entry field shows the key so you can check it before saving. The key is stored encrypted in **macOS Keychain**,
 separately from configuration, recordings, and the app bundle. The app reads it
 only when transcription needs it; it is never written to logs or JSON config.
 The key is not synchronized through iCloud. The menu also supports removing it.
