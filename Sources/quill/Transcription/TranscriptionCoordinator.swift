@@ -121,6 +121,13 @@ actor TranscriptionCoordinator {
         let observationURL = dir.appendingPathComponent("speaker-observations.jsonl")
         let observations = ((try? String(contentsOf: observationURL, encoding: .utf8)) ?? "")
             .split(separator: "\n").compactMap { try? JSONDecoder().decode(SpeakerObservation.self, from: Data($0.utf8)) }
+        var roster = meta.participantRoster ?? ParticipantRoster(audio_started_at: meta.audioStartedAt ?? 0)
+        if let started = meta.audioStartedAt { roster.audio_started_at = started }
+        if let name = meta.localSpeakerName, !meta.sharedMicrophone {
+            roster.observe(SpeakerObservation(observed_at: roster.audio_started_at, meeting_id: "local", names: [name],
+                                              source: "local_microphone", is_local: true), localName: name)
+        }
+        for observation in observations { roster.observe(observation, localName: meta.localSpeakerName) }
 
         var merged: [Transcript.Segment] = []
         var analysis = SpeakerAnalysis(turns: [], names: [:])
@@ -193,6 +200,7 @@ actor TranscriptionCoordinator {
             throw TranscriptionFailure("No audio track could be transcribed. See transcribe.log; the session remains pending.")
         }
         merged.sort { $0.start_ms < $1.start_ms }
+        merged = roster.relabel(merged)
 
         let transcript = Transcript(
             engine: engine.name,
@@ -200,7 +208,8 @@ actor TranscriptionCoordinator {
             created_at: ISO8601DateFormatter().string(from: Date()),
             segments: merged,
             schema_version: 2,
-            speaker_detection: speakerStatus
+            speaker_detection: speakerStatus,
+            participant_roster: roster
         )
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
@@ -270,6 +279,7 @@ struct SessionMeta {
     let audioStartedAt: Double?
     let localSpeakerName: String?
     let sharedMicrophone: Bool
+    var participantRoster: ParticipantRoster? = nil
 
     enum MetaError: Error, CustomStringConvertible {
         case unreadable(URL)
@@ -299,9 +309,11 @@ struct SessionMeta {
         if let system = files["system"] {
             tracks.append(Track(file: system, speaker: "them", offsetMs: offsets["system"] ?? 0))
         }
+        let roster = (try? Data(contentsOf: dir.appendingPathComponent("participants.json")))
+            .flatMap { try? JSONDecoder().decode(ParticipantRoster.self, from: $0) }
         return SessionMeta(tracks: tracks, audioStartedAt: json["audio_started_at"] as? Double,
                            localSpeakerName: SpeakerAttribution.cleanName(json["local_speaker_name"] as? String),
-                           sharedMicrophone: json["shared_microphone"] as? Bool ?? false)
+                           sharedMicrophone: json["shared_microphone"] as? Bool ?? false, participantRoster: roster)
     }
 }
 
@@ -309,7 +321,7 @@ struct SessionMeta {
 /// exists to be serialized.
 struct Transcript: Codable, Sendable {
     struct Segment: Codable, Sendable {
-        let speaker: String
+        var speaker: String
         let start_ms: Int
         let end_ms: Int
         var text: String
@@ -333,6 +345,7 @@ struct Transcript: Codable, Sendable {
     var segments: [Segment]
     var schema_version: Int? = nil
     var speaker_detection: [String: String]? = nil
+    var participant_roster: ParticipantRoster? = nil
 
     /// Write transcript.json and render transcript.md. Both writes are atomic
     /// (temp file + rename), so a partially written transcript never exists on
@@ -348,6 +361,15 @@ struct Transcript: Codable, Sendable {
 
     private func rendered(title: String) -> String {
         var lines = ["# \(title)", "", "engine: \(engine) (\(model))", ""]
+        if let roster = participant_roster, !roster.participants.isEmpty {
+            lines += ["## Participants", ""]
+            for participant in roster.participants.sorted(by: { $0.name < $1.name }) {
+                let name = participant.name.replacingOccurrences(of: "*", with: "\\*")
+                    .replacingOccurrences(of: "[", with: "\\[").replacingOccurrences(of: "]", with: "\\]")
+                lines.append("- \(name)\(participant.is_local ? " (you)" : "")")
+            }
+            lines += ["", "## Transcript", ""]
+        }
         for seg in segments {
             let name = seg.displayName.replacingOccurrences(of: "*", with: "\\*")
                 .replacingOccurrences(of: "[", with: "\\[").replacingOccurrences(of: "]", with: "\\]")

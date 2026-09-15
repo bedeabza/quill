@@ -2,6 +2,17 @@ import XCTest
 @testable import quill
 
 final class SpeakerContinuityTests: XCTestCase {
+    func testEstablishedVoiceNameSurvivesLongLaterUIGap() {
+        let turns = [SpeakerTurn(speaker_id: "voice", start: 0, end: 20),
+                     SpeakerTurn(speaker_id: "voice", start: 30, end: 50),
+                     SpeakerTurn(speaker_id: "voice", start: 100, end: 1000)]
+        let anchors = [NamedSpeakerSpan(start: 1, end: 9, identity: .init(name: "Mihai", source: "meeting_tile", evidence_count: 30)),
+                       NamedSpeakerSpan(start: 31, end: 39, identity: .init(name: "Mihai", source: "meeting_tile", evidence_count: 30))]
+        let learned = SpeakerAttribution.voiceNames(turns: turns, spans: anchors)
+        XCTAssertEqual(learned["voice"]?.name, "Mihai")
+        XCTAssertEqual(SpeakerAttribution.resolvedIdentity(start: 800, end: 801, turns: turns, spans: anchors, voiceNames: learned)?.name, "Mihai")
+    }
+
     private func span(_ name: String, _ start: Double, _ end: Double, source: String = "meeting_tile") -> NamedSpeakerSpan {
         NamedSpeakerSpan(start: start, end: end, identity: SpeakerIdentity(name: name, source: source, evidence_count: 20))
     }

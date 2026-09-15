@@ -163,6 +163,86 @@ final class TranscriptPostProcessorTests: XCTestCase {
         XCTAssertEqual(repeated.status, "skipped_already_processed")
     }
 
+    func testOversizedEditDoesNotDiscardValidCorrections() async throws {
+        let directory = try recording()
+        var original = fixture()
+        original.segments[1].text = "Mai e și areas VPU."
+        try original.write(to: directory)
+        let json = try Data(contentsOf: directory.appendingPathComponent("transcript.json"))
+        let markdown = try Data(contentsOf: directory.appendingPathComponent("transcript.md"))
+        let harness = try fakeHarness(response: #"{"edits":[{"segment_index":0,"original_text":"We use teh platform.","text":"We use the platform."},{"segment_index":1,"original_text":"Mai e și areas VPU.","text":"Mai e și RSVP-ul."}],"speaker_suggestions":[]}"#)
+
+        let report = await TranscriptPostProcessor.process(directory, options: .init(mode: .auto)) { _, _ in harness }
+
+        XCTAssertEqual(report.status, "completed")
+        XCTAssertEqual(report.corrections?.edits.map(\.segment_index), [0])
+        XCTAssertEqual(report.rejected_edits?.map(\.segment_index), [1])
+        XCTAssertEqual(report.rejected_edits?.map(\.reason), ["edit_too_large"])
+        let current = try JSONDecoder().decode(Transcript.self, from: Data(contentsOf: directory.appendingPathComponent("transcript.json")))
+        XCTAssertEqual(current.segments[0].text, "We use the platform.")
+        XCTAssertEqual(current.segments[1].text, original.segments[1].text)
+        XCTAssertEqual(current.segments.map(\.start_ms), original.segments.map(\.start_ms))
+        XCTAssertEqual(current.segments.map(\.end_ms), original.segments.map(\.end_ms))
+        XCTAssertEqual(current.segments.map(\.speaker_name), original.segments.map(\.speaker_name))
+        let backup = directory.appendingPathComponent(try XCTUnwrap(report.backup_directory))
+        XCTAssertEqual(try Data(contentsOf: backup.appendingPathComponent("transcript.json")), json)
+        XCTAssertEqual(try Data(contentsOf: backup.appendingPathComponent("transcript.md")), markdown)
+        let saved = try JSONDecoder().decode(PostProcessingReport.self, from: Data(contentsOf: directory.appendingPathComponent("postprocess.json")))
+        XCTAssertEqual(saved.rejected_edits?.first?.reason, "edit_too_large")
+        let repeated = await TranscriptPostProcessor.process(directory, options: .init(mode: .auto)) { _, _ in
+            XCTFail("An unchanged transcript with rejected suggestions was submitted again")
+            return harness
+        }
+        XCTAssertEqual(repeated.status, "skipped_already_processed")
+        XCTAssertEqual(repeated.rejected_edits?.first?.reason, "edit_too_large")
+    }
+
+    func testRejectedProposalsDoNotPreventUnrelatedValidEdits() throws {
+        var original = fixture()
+        original.segments[1].text = "We pay 100."
+        original.segments.append(.init(speaker: "them", start_ms: 2000, end_ms: 3000, text: "We do not agree."))
+        let proposed = TranscriptCorrections(edits: [
+            .init(segment_index: 0, original_text: "We use teh platform.", text: "We use the platform."),
+            .init(segment_index: 1, original_text: "We pay 100.", text: "We pay 200."),
+            .init(segment_index: 2, original_text: "We do not agree.", text: "We do agree."),
+            .init(segment_index: 99, original_text: "Invented", text: "Invented.")
+        ], speaker_suggestions: [.init(segment_indices: [1], name: "Invented Person", evidence_segment_indices: [1], reason: "Guess")])
+        let filtered = TranscriptPostProcessor.filter(proposed, transcript: original)
+        XCTAssertEqual(filtered.corrections.edits.map(\.segment_index), [0])
+        XCTAssertEqual(filtered.rejectedEdits.map(\.reason), ["changed_numbers", "changed_negations", "invalid_segment"])
+        XCTAssertEqual(filtered.rejectedSpeakerSuggestions, [0])
+        XCTAssertTrue(filtered.corrections.speaker_suggestions.isEmpty)
+        let output = try TranscriptPostProcessor.validate(filtered.corrections, transcript: original)
+        XCTAssertEqual(output.segments.map(\.text), ["We use the platform.", "We pay 100.", "We do not agree."])
+    }
+
+    func testDuplicateProposalsAreAllRejectedRegardlessOfOrder() {
+        let first = TranscriptCorrections.Edit(segment_index: 0, original_text: "We use teh platform.", text: "We use the platform.")
+        let second = TranscriptCorrections.Edit(segment_index: 0, original_text: "wrong original", text: "We use a platform.")
+        let unrelated = TranscriptCorrections.Edit(segment_index: 1, original_text: "My name is Bob.", text: "My name is Bob!")
+        for edits in [[first, second, unrelated], [second, first, unrelated]] {
+            let filtered = TranscriptPostProcessor.filter(.init(edits: edits, speaker_suggestions: []), transcript: fixture())
+            XCTAssertEqual(filtered.corrections.edits.map(\.segment_index), [1])
+            XCTAssertEqual(filtered.rejectedEdits.map(\.segment_index), [0, 0])
+            XCTAssertEqual(filtered.rejectedEdits.map(\.reason), ["duplicate_segment", "duplicate_segment"])
+        }
+    }
+
+    func testAllRejectedEditsPreserveFilesWithoutCreatingBackup() async throws {
+        let directory = try recording()
+        let json = try Data(contentsOf: directory.appendingPathComponent("transcript.json"))
+        let markdown = try Data(contentsOf: directory.appendingPathComponent("transcript.md"))
+        let harness = try fakeHarness(response: #"{"edits":[{"segment_index":0,"original_text":"wrong original","text":"We use the platform."}],"speaker_suggestions":[]}"#)
+        let report = await TranscriptPostProcessor.process(directory, options: .init(mode: .codex)) { _, _ in harness }
+        XCTAssertEqual(report.status, "completed")
+        XCTAssertEqual(report.rejected_edits?.first?.reason, "original_text_mismatch")
+        XCTAssertTrue(try XCTUnwrap(report.corrections).edits.isEmpty)
+        XCTAssertNil(report.backup_directory)
+        XCTAssertEqual(report.input_sha256, report.output_sha256)
+        XCTAssertEqual(try Data(contentsOf: directory.appendingPathComponent("transcript.json")), json)
+        XCTAssertEqual(try Data(contentsOf: directory.appendingPathComponent("transcript.md")), markdown)
+    }
+
     func testInvalidHarnessOutputLeavesBothOriginalFilesUnchanged() async throws {
         let directory = try recording()
         let json = try Data(contentsOf: directory.appendingPathComponent("transcript.json"))
@@ -172,6 +252,61 @@ final class TranscriptPostProcessorTests: XCTestCase {
         XCTAssertEqual(report.status, "failed_preserved_transcript")
         XCTAssertEqual(try Data(contentsOf: directory.appendingPathComponent("transcript.json")), json)
         XCTAssertEqual(try Data(contentsOf: directory.appendingPathComponent("transcript.md")), markdown)
+    }
+
+    func testRosterBackedSpeakerCorrectionIsAppliedWithoutChangingTextOrTiming() async throws {
+        let directory = try recording()
+        var transcript = fixture()
+        transcript.participant_roster = ParticipantRoster(audio_started_at: 1000, confirmed_sole_remote_speaker: "Bob")
+        try transcript.write(to: directory)
+        let original = try Data(contentsOf: directory.appendingPathComponent("transcript.json"))
+        let harness = try fakeHarness(response: #"{"edits":[],"speaker_suggestions":[{"segment_indices":[1],"name":"Bob","evidence_segment_indices":[],"reason":"Verified sole remote participant."}]}"#)
+        let report = await TranscriptPostProcessor.process(directory, options: .init(mode: .codex)) { _, _ in harness }
+        XCTAssertEqual(report.status, "completed")
+        XCTAssertEqual(report.speaker_relabels, 1)
+        let current = try JSONDecoder().decode(Transcript.self, from: Data(contentsOf: directory.appendingPathComponent("transcript.json")))
+        XCTAssertEqual(current.segments[1].speaker_name, "Bob")
+        XCTAssertEqual(current.segments[1].attribution, "postprocess_roster")
+        XCTAssertEqual(current.segments.map(\.text), transcript.segments.map(\.text))
+        XCTAssertEqual(current.segments.map(\.start_ms), transcript.segments.map(\.start_ms))
+        let backup = directory.appendingPathComponent(try XCTUnwrap(report.backup_directory))
+        XCTAssertEqual(try Data(contentsOf: backup.appendingPathComponent("transcript.json")), original)
+    }
+
+    func testRosterCannotAuthorizeInventedNamesOrOverwriteManualLabels() throws {
+        var transcript = fixture()
+        transcript.participant_roster = ParticipantRoster(audio_started_at: 1000, confirmed_sole_remote_speaker: "Bob")
+        let invented = TranscriptCorrections.SpeakerSuggestion(segment_indices: [1], name: "Eve", evidence_segment_indices: [], reason: "Guess")
+        XCTAssertThrowsError(try TranscriptPostProcessor.validate(.init(edits: [], speaker_suggestions: [invented]), transcript: transcript))
+        transcript.segments[1].speaker_name = "Reviewed name"
+        transcript.segments[1].attribution = "manual"
+        let overwrite = TranscriptCorrections.SpeakerSuggestion(segment_indices: [1], name: "Bob", evidence_segment_indices: [1], reason: "Sole speaker")
+        XCTAssertThrowsError(try TranscriptPostProcessor.validate(.init(edits: [], speaker_suggestions: [overwrite]), transcript: transcript))
+    }
+
+    func testVerifiedRosterRepairsOmittedSpeakerSuggestionsToo() async throws {
+        let directory = try recording()
+        var transcript = fixture()
+        transcript.participant_roster = ParticipantRoster(audio_started_at: 1000, confirmed_sole_remote_speaker: "Bob")
+        try transcript.write(to: directory)
+        let harness = try fakeHarness(response: #"{"edits":[],"speaker_suggestions":[]}"#)
+        let report = await TranscriptPostProcessor.process(directory, options: .init(mode: .codex)) { _, _ in harness }
+        let current = try JSONDecoder().decode(Transcript.self, from: Data(contentsOf: directory.appendingPathComponent("transcript.json")))
+        XCTAssertEqual(report.status, "completed")
+        XCTAssertEqual(report.speaker_relabels, 1)
+        XCTAssertEqual(current.segments[1].speaker_name, "Bob")
+        XCTAssertEqual(current.segments[1].attribution, "confirmed_participant")
+        XCTAssertEqual(current.segments.map(\.text), transcript.segments.map(\.text))
+    }
+
+    func testPromptIncludesRosterAndVerifiedAssignments() throws {
+        var transcript = fixture()
+        transcript.participant_roster = ParticipantRoster(audio_started_at: 1000, confirmed_sole_remote_speaker: "Bob")
+        let input = try TranscriptPostProcessor.prompt(transcript: transcript, glossary: [])
+        let text = String(decoding: input, as: UTF8.self)
+        XCTAssertTrue(text.contains("participant_roster"))
+        XCTAssertTrue(text.contains("verified_remote_speaker_assignments"))
+        XCTAssertTrue(text.contains("\"Bob\":[1]"))
     }
 
     func testConcurrentManualCorrectionIsNeverOverwritten() async throws {

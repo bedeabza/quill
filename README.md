@@ -102,24 +102,32 @@ Codex wins a tie. Otherwise it checks Codex, then Claude Code. An explicit choic
 never falls back to the other provider, and a failed model request is not resent
 to another provider. Quill never installs a harness or prompts you to sign in.
 
-Enabling this option sends transcript text, speaker labels, and any configured
+Enabling this option sends transcript text, speaker labels, recorded participants, and any configured
 glossary to the selected harness's cloud provider and uses that account's limits.
 It is not local model inference. New runs use the setting in effect after local
 transcription finishes; changing the setting does not retract a request already
 sent. The CLI's normal default model is used. No additional API key is required.
 
-Corrections are constrained to small text edits. Segment boundaries, timestamps,
-IDs, existing names, numeric values, and explicit English/Romanian negations are
-preserved. A failed validation rejects the whole response. These checks reduce
-unwanted rewriting but cannot prove every correction is accurate. Speaker-name
-suggestions require cited transcript evidence and are saved for review only;
-they never automatically replace unknown speaker labels.
+Text corrections preserve segment boundaries, timestamps, numeric values, and
+explicit English/Romanian negations. Invalid proposals are skipped individually.
+These checks reduce unwanted rewriting but cannot prove every correction is accurate.
+Speaker corrections backed by a verified sole-remote-participant interval or an
+explicit user confirmation can update anonymous or inconsistent names automatically.
+Manual names remain protected. Unsupported text-only speaker suggestions stay in
+the report for review, and a multi-person roster alone cannot establish who spoke.
 
 A successful edit keeps exact originals under `postprocess-backup-<id>/`, updates
 `transcript.json` and `transcript.md`, and records edits, speaker suggestions,
 provider, and input/output hashes in `postprocess.json`. Repeating a successful
 run on the same transcript skips it. The one-off command does not run the archive
 hook. Existing recordings are not automatically submitted when cleanup is enabled.
+
+Each proposed correction is checked independently. Valid corrections are applied;
+rejected edits leave their original segment unchanged and are listed with a reason
+in `postprocess.json`. Rejected speaker suggestions are listed by proposal index.
+Conflicting edits for the same segment are all rejected. The edit-size limit guards
+against substantial rewrites by a model without audio; it does not stop recording,
+transcription, or other valid cleanup edits.
 
 ```sh
 quill postprocess status
@@ -149,6 +157,21 @@ harness runs use a private temporary directory, restrict tools and customization
 disable session persistence, and terminate the subprocess group on timeout.
 
 ## Speaker names
+
+Quill saves a participant roster in `participants.json` while recording and keeps
+membership observations in `speaker-observations.jsonl`. Names are collected from
+meeting tiles independently of their speaking indicators. The scoped meeting tree
+is refreshed during the call, including background browser tabs, so silent people,
+late arrivals, and departures can be recorded. Known names survive missing UI data.
+The transcript and archive list participants before the spoken transcript, and the
+coding harness receives that roster plus verified speaker assignments.
+
+A complete participant count and named roster let Quill assign a two-person call's
+remote audio to the other participant, including short replies and acoustic
+clustering gaps. Unknown membership, blind periods, and multi-person intervals do
+not authorize guessing. An explicitly confirmed sole remote speaker covers the
+whole recording. Established voice identities no longer require UI evidence for
+a fixed fraction of the person's total speaking time as a meeting gets longer.
 
 Speaker separation runs automatically after recording, entirely on-device,
 using FluidAudio's offline Pyannote/WeSpeaker/VBx pipeline. Unknown voices

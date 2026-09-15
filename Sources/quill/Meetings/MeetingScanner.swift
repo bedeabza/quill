@@ -46,6 +46,7 @@ struct MeetingScan: Sendable {
     var observedAt = Date().timeIntervalSince1970
     var needsZoomScreenPermission = false
     var speakerNameWarnings: [String: String] = [:]
+    var rosters: [SpeakerObservation] = []
 }
 
 /// Accessibility objects stay on this actor. Only value snapshots reach UI code.
@@ -94,6 +95,7 @@ actor MeetingScanner {
         let kind: SpeakerUITileKind
     }
     private var tiles: [String: [CachedTile]] = [:]
+    private var rosters: [String: SpeakerObservation] = [:]
     private var speakerRefresh: [String: SpeakerTreeRefresh<AXUIElement>] = [:]
     private var zoomVideos: [String: [AXUIElement]] = [:]
     private let zoomDetector = ZoomWindowSpeakerDetector()
@@ -107,7 +109,8 @@ actor MeetingScanner {
     func speakerActivity(for meetingID: String) async -> SpeakerObservation? {
         guard AXIsProcessTrusted(), let entry = known[meetingID], !bool(entry.window, kAXMinimizedAttribute) else { return nil }
         if let tab = entry.tab, !bool(tab, kAXValueAttribute) && !bool(tab, kAXSelectedAttribute) {
-            invalidateSpeakerTiles(meetingID)
+            // Speaking indicators in a hidden tab may be stale. Keep discovering
+            // membership from the established document through the slower poll.
             return nil
         }
         refreshSpeakerTiles(entry)
@@ -151,19 +154,24 @@ actor MeetingScanner {
     private func invalidateSpeakerTiles(_ id: String) {
         tiles.removeValue(forKey: id)
         zoomVideos.removeValue(forKey: id)
+        rosters.removeValue(forKey: id)
         speakerRefresh[id]?.invalidate()
     }
 
     private func refreshSpeakerTiles(_ entry: Known) {
         let id = entry.meeting.id
-        if let tab = entry.tab, !bool(tab, kAXValueAttribute) && !bool(tab, kAXSelectedAttribute) {
-            invalidateSpeakerTiles(id)
-            return
-        }
         guard let root = entry.isBrowser ? entry.document : entry.window,
               !isDestroyed(root) else {
             invalidateSpeakerTiles(id)
             return
+        }
+        if let expected = entry.code {
+            let url = string(root, "AXURL")
+            let document = url.isEmpty ? string(root, kAXDocumentAttribute) : url
+            if !document.isEmpty && MeetingEvidence.meetCode(in: document) != expected {
+                invalidateSpeakerTiles(id)
+                return
+            }
         }
         let now = ProcessInfo.processInfo.systemUptime
         let deadline = now + 0.04
@@ -173,8 +181,11 @@ actor MeetingScanner {
             guard !role.isEmpty, let descendants = children(element, attribute: kAXChildrenAttribute) else { return nil }
             var text = ""
             if role == kAXStaticTextRole { text = string(element, kAXValueAttribute) }
-            else if role == "AXMenuItem" {
-                text = string(element, kAXTitleAttribute) + " " + string(element, kAXDescriptionAttribute)
+            else if ["AXMenuItem", "AXButton", "AXTab", "AXHeading", "AXTabGroup"].contains(role) {
+                let title = string(element, kAXTitleAttribute), description = string(element, kAXDescriptionAttribute)
+                text = title == description || description.isEmpty ? title : (title.isEmpty ? description : title + " " + description)
+                if role == "AXTabGroup", !description.isEmpty { text = description }
+                if ["AXButton", "AXTab", "AXHeading"].contains(role), !title.isEmpty, !description.isEmpty, title != description { text = title + "\n" + description }
             }
             let node = SpeakerUINode(parent: parent, role: role, text: text,
                                      classes: Set(strings(element, "AXDOMClassList")),
@@ -186,9 +197,15 @@ actor MeetingScanner {
         if !refresh.isFresh(at: now) {
             tiles.removeValue(forKey: id)
             zoomVideos.removeValue(forKey: id)
+            rosters.removeValue(forKey: id)
         }
         guard let snapshot else { return }
         let nodes = snapshot.map(\.node)
+        let members = ParticipantEvidence.members(nodes, service: entry.meeting.service, localName: Config.localSpeakerName())
+        let count = ParticipantEvidence.participantCount(nodes)
+        let complete = count == members.filter { !$0.is_local }.count + 1 && Config.localSpeakerName() != nil
+        rosters[id] = SpeakerObservation(observed_at: Date().timeIntervalSince1970, meeting_id: id, names: [],
+            source: "meeting_roster", participants: members, participant_count: count, roster_complete: complete)
         let detected: [SpeakerUITile]
         switch entry.meeting.service {
         case "Google Meet": detected = MeetTileEvidence.tiles(nodes)
@@ -245,7 +262,9 @@ actor MeetingScanner {
                 for node in window.nodes where node.isTab || node.role == "AXWebArea" {
                     let code = MeetingEvidence.meetCode(in: node.url) ?? MeetingEvidence.meetCode(in: node.text)
                     if ended && !node.isTab { continue }
-                    let matchingTab = node.isTab ? node.element : window.nodes.first(where: { $0.isTab && $0.selected })?.element
+                    let matchingTab = node.isTab ? node.element : window.nodes.first(where: {
+                        $0.isTab && (code != nil ? MeetingEvidence.meetCode(in: $0.text) == code : $0.selected)
+                    })?.element
                     let existing = known.values.first { entry in
                         entry.pid == app.pid && (code != nil ? entry.code == code : matchingTab.map { tab in entry.tab.map { CFEqual($0, tab) } == true } == true)
                     }
@@ -269,6 +288,14 @@ actor MeetingScanner {
                 }
                 let leave = hasCallControls(window, service: app.service)
                 let ended = window.nodes.contains { MeetingEvidence.isEndMessage($0.text) }
+                if captureSpeakers && !ended {
+                    // Read only this call's established AX document, including
+                    // when its browser tab or window is in the background.
+                    refreshSpeakerTiles(entry)
+                    if let roster = rosters[entry.meeting.id], speakerRefresh[entry.meeting.id]?.isFresh(at: ProcessInfo.processInfo.systemUptime) == true {
+                        result.rosters.append(roster)
+                    }
+                }
                 if captureSpeakers && !ended && !bool(entry.window, kAXMinimizedAttribute) {
                     // Browser windows may contain several calls. Read only the
                     // established meeting document, never names from another tab.
@@ -328,7 +355,6 @@ actor MeetingScanner {
                             return row
                         }
                     }
-                    refreshSpeakerTiles(entry)
                     let tileCount = tiles[entry.meeting.id]?.count ?? 0
                     result.speakerCaptureStatus[entry.meeting.id, default: ""] += "; \(tileCount) speaker tiles; discovery \(speakerRefresh[entry.meeting.id]?.isFresh(at: ProcessInfo.processInfo.systemUptime) == true ? "current" : "refreshing")"
                     if entry.meeting.service == "Zoom" {

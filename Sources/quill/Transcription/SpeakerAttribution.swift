@@ -7,8 +7,9 @@ struct SpeakerTurn: Codable, Sendable {
     let end: Double
 }
 
-/// One contemporaneous UI observation. Empty/multiple names are meaningful:
-/// they never authorize attributing speech to a single person.
+/// One contemporaneous UI observation. Active-speaker names and participant
+/// membership are distinct evidence; an empty speaking indicator loses neither
+/// the roster nor an independently established voice identity.
 struct SpeakerObservation: Codable, Sendable {
     let observed_at: Double
     let meeting_id: String
@@ -16,6 +17,9 @@ struct SpeakerObservation: Codable, Sendable {
     var source = "accessibility_active_speaker"
     var text: String? = nil
     var is_local: Bool? = nil
+    var participants: [RosterMember]? = nil
+    var participant_count: Int? = nil
+    var roster_complete: Bool? = nil
 }
 
 struct SpeakerIdentity: Codable, Equatable, Sendable {
@@ -196,6 +200,8 @@ enum SpeakerAttribution {
     /// Learn a recording-local name for a voice from sustained speaking tiles,
     /// never from captions or a participant roster. A voice can split into
     /// several clusters, but a cluster with competing identities stays unnamed.
+    /// Once established, a name does not expire just because later UI samples
+    /// are unavailable or the voice's total speaking time keeps growing.
     static func voiceNames(turns: [SpeakerTurn], spans: [NamedSpeakerSpan]) -> [String: SpeakerIdentity] {
         let trusted = spans.filter {
             ["meeting_tile", "zoom_border"].contains($0.identity.source) && $0.identity.evidence_count >= 3
@@ -208,9 +214,7 @@ enum SpeakerAttribution {
             var name = ""
         }
         var votes: [String: [String: Evidence]] = [:]
-        var voiceIntervals: [String: [(Double, Double)]] = [:]
         for (turnIndex, turn) in turns.enumerated() where turn.start.isFinite && turn.end.isFinite && turn.end > turn.start {
-            voiceIntervals[turn.speaker_id, default: []].append((turn.start, turn.end))
             for (spanIndex, span) in trusted.enumerated() {
                 let start = max(turn.start + 0.3, span.start), end = min(turn.end - 0.3, span.end)
                 guard end - start >= 0.2,
@@ -231,7 +235,6 @@ enum SpeakerAttribution {
             let durations = names.mapValues { coveredDuration($0.intervals) }
             guard let best = durations.max(by: { $0.value < $1.value }), let evidence = names[best.key],
                   best.value >= 10, evidence.turns.count >= 2, evidence.spans.count >= 2,
-                  best.value >= coveredDuration(voiceIntervals[id] ?? []) * 0.35,
                   best.value >= durations.values.reduce(0, +) * 0.95,
                   durations.filter({ $0.key != best.key }).allSatisfy({ $0.value < 2 }) else { continue }
             result[id] = SpeakerIdentity(name: evidence.name, source: "meeting_voice", evidence_count: evidence.spans.count)

@@ -96,6 +96,12 @@ struct Meetings: ParsableCommand {
                                          "apps": apps.map(\.name), "meetings": rows, "active_speakers": scan.speakers,
                                          "speaker_capture": scan.speakerCaptureStatus,
                                          "speaker_boxes": scan.speakerBoxes,
+                                         "participants": scan.rosters.map { observation -> [String: Any] in
+                                             ["meeting_id": observation.meeting_id,
+                                              "names": (observation.participants ?? []).map(\.name),
+                                              "reported_count": observation.participant_count ?? 0,
+                                              "complete": observation.roster_complete ?? false]
+                                         },
                                          "tile_speakers": tileSpeakers, "observed_at": scan.observedAt,
                                          "zoom_border_scores": await scanner.zoomBorderScores(),
                                          "zoom_capture_status": await scanner.zoomCaptureStatus(),

@@ -101,6 +101,7 @@ final class MeetingAssistant {
         guard !scanning else { return }
         scanning = true
         let apps = MeetingApp.running()
+        let generation = recordingGeneration
         Task { [weak self, scanner] in
             let recordingSpeakers = self?.policy.recording == true && Config.speakerDetection()
             let scan = await scanner.scan(apps: apps, captureSpeakers: recordingSpeakers,
@@ -111,11 +112,11 @@ final class MeetingAssistant {
             guard self.enabled else { return }
             let action = self.policy.update(scan.observations, now: ProcessInfo.processInfo.systemUptime)
             self.needsZoomScreenPermission = scan.needsZoomScreenPermission && self.policy.recordingMeeting?.service == "Zoom"
-            if let meeting = self.policy.recordingMeeting, let names = scan.speakers[meeting.id] {
+            if generation == self.recordingGeneration, let meeting = self.policy.recordingMeeting, let names = scan.speakers[meeting.id] {
                 self.onSpeakers?(SpeakerObservation(observed_at: scan.speakerObservedAt[meeting.id] ?? scan.observedAt,
                                                     meeting_id: meeting.id, names: names))
             }
-            for caption in scan.captions where caption.meeting_id == self.policy.recordingMeeting?.id {
+            for caption in scan.captions + scan.rosters where generation == self.recordingGeneration && caption.meeting_id == self.policy.recordingMeeting?.id {
                 self.onSpeakers?(caption)
             }
             if scan.needsPermission {

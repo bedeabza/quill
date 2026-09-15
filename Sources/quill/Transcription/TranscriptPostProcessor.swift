@@ -29,7 +29,15 @@ struct PostProcessingReport: Codable, Sendable {
     var output_sha256: String? = nil
     var backup_directory: String? = nil
     var corrections: TranscriptCorrections? = nil
+    var rejected_edits: [RejectedTranscriptEdit]? = nil
+    var rejected_speaker_suggestions: [Int]? = nil
+    var speaker_relabels: Int? = nil
     var created_at = ISO8601DateFormatter().string(from: Date())
+}
+
+struct RejectedTranscriptEdit: Codable, Sendable {
+    let segment_index: Int
+    let reason: String
 }
 
 enum TranscriptPostProcessor {
@@ -50,7 +58,18 @@ enum TranscriptPostProcessor {
             ["index": index, "speaker_id": segment.speaker, "speaker_name": segment.speaker_name ?? "",
              "source": segment.source ?? "", "text": segment.text]
         }
-        let payload = try JSONSerialization.data(withJSONObject: ["glossary": glossary, "segments": segments], options: [.sortedKeys])
+        var context: [String: Any] = ["glossary": glossary, "segments": segments]
+        if let roster = transcript.participant_roster {
+            context["participant_roster"] = try JSONSerialization.jsonObject(with: JSONEncoder().encode(roster.participants))
+            var assignments: [String: [Int]] = [:]
+            for (index, segment) in transcript.segments.enumerated() {
+                guard let identity = roster.soleRemoteIdentity(startMS: segment.start_ms, endMS: segment.end_ms),
+                      roster.permits(identity.name, for: segment) else { continue }
+                assignments[identity.name, default: []].append(index)
+            }
+            context["verified_remote_speaker_assignments"] = assignments
+        }
+        let payload = try JSONSerialization.data(withJSONObject: context, options: [.sortedKeys])
         guard payload.count <= 300_000, segments.count <= 5000 else { throw PostProcessingFailure.inputTooLarge }
         return Data("""
         You are a conservative meeting-transcript proofreader. Return only the requested JSON.
@@ -60,8 +79,11 @@ enum TranscriptPostProcessor {
         Preserve the spoken language, including Romanian, English, and code-switching. Never translate, summarize, rewrite,
         invent missing speech, or change facts, numbers, commitments, or negations. Leave uncertain wording unchanged.
         Return edits only for changed segments, using their original index and exact original_text. Small corrections only.
-        Do not change speaker IDs, existing names, timestamps, or segment boundaries.
-        You have no audio and cannot identify voices. Speaker suggestions are for human review only:
+        Do not change speaker IDs, timestamps, or segment boundaries in text edits.
+        You have no audio and cannot identify voices. Use the participant roster and verified per-segment names
+        to propose speaker corrections separately, including anonymous or inconsistent labels. Verified roster
+        assignments can be applied automatically; never override a manual label. A roster of several people
+        alone does not establish who spoke. Other speaker suggestions are for human review only:
         suggest a name for unnamed segments only when an explicit introduction or other clear evidence in the supplied
         original transcript supports it. Cite the supporting segment indices. A mentioned name, question addressed to a
         person, conversational role, or similarity of topics alone is insufficient. Do not propagate a name across a cluster.
@@ -75,33 +97,77 @@ enum TranscriptPostProcessor {
         var corrected = transcript
         var edited: Set<Int> = []
         for edit in corrections.edits {
-            guard transcript.segments.indices.contains(edit.segment_index), edited.insert(edit.segment_index).inserted else {
-                throw PostProcessingFailure.invalidResponse
-            }
-            let old = transcript.segments[edit.segment_index].text
-            guard edit.original_text == old, !edit.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-                  !edit.text.contains(where: { $0.isNewline || $0.asciiValue.map { $0 < 32 } == true }),
-                  edit.text.count <= max(40, old.count + old.count / 3),
-                  numbers(old) == numbers(edit.text), negations(old) == negations(edit.text),
-                  distance(old.lowercased(), edit.text.lowercased()) <= max(2, old.count / 4) else {
+            guard edited.insert(edit.segment_index).inserted,
+                  editRejectionReason(edit, transcript: transcript) == nil else {
                 throw PostProcessingFailure.invalidResponse
             }
             corrected.segments[edit.segment_index].text = edit.text
         }
         for suggestion in corrections.speaker_suggestions {
-            guard SpeakerAttribution.cleanName(suggestion.name) == suggestion.name,
-                  !suggestion.segment_indices.isEmpty, !suggestion.evidence_segment_indices.isEmpty,
-                  !suggestion.reason.isEmpty, suggestion.reason.count <= 1000,
-                  suggestion.segment_indices.allSatisfy({ transcript.segments.indices.contains($0) && transcript.segments[$0].speaker_name == nil }),
-                  suggestion.evidence_segment_indices.allSatisfy({ transcript.segments.indices.contains($0) }),
-                  suggestion.evidence_segment_indices.contains(where: {
-                      let segment = transcript.segments[$0]
-                      return segment.text.localizedCaseInsensitiveContains(suggestion.name)
-                          || segment.speaker_name?.caseInsensitiveCompare(suggestion.name) == .orderedSame
-                  }) else { throw PostProcessingFailure.invalidResponse }
+            guard validSpeakerSuggestion(suggestion, transcript: transcript) else { throw PostProcessingFailure.invalidResponse }
+            for index in suggestion.segment_indices where transcript.participant_roster?.permits(suggestion.name, for: transcript.segments[index]) == true {
+                corrected.segments[index].speaker_name = suggestion.name
+                corrected.segments[index].attribution = "postprocess_roster"
+                let identity = SpeakerIdentity(name: suggestion.name, source: "postprocess_roster", evidence_count: 1)
+                corrected.segments[index].speaker = SpeakerAttribution.namedSpeakerID(identity, source: "system")
+            }
         }
-        // Suggestions are deliberately never applied to canonical speaker labels.
+        // Unverified text-only suggestions remain review-only.
         return corrected
+    }
+
+    /// Reject individual proposals without losing unrelated valid corrections.
+    /// Every proposal is checked against the original transcript; conflicting
+    /// proposals for the same segment are all rejected, regardless of order.
+    static func filter(_ proposed: TranscriptCorrections, transcript: Transcript) ->
+        (corrections: TranscriptCorrections, rejectedEdits: [RejectedTranscriptEdit], rejectedSpeakerSuggestions: [Int]) {
+        let counts = Dictionary(grouping: proposed.edits, by: \.segment_index).mapValues(\.count)
+        var edits: [TranscriptCorrections.Edit] = []
+        var rejectedEdits: [RejectedTranscriptEdit] = []
+        for edit in proposed.edits {
+            let reason = counts[edit.segment_index, default: 0] > 1
+                ? "duplicate_segment" : editRejectionReason(edit, transcript: transcript)
+            if let reason { rejectedEdits.append(.init(segment_index: edit.segment_index, reason: reason)) }
+            else { edits.append(edit) }
+        }
+        var suggestions: [TranscriptCorrections.SpeakerSuggestion] = []
+        var rejectedSuggestions: [Int] = []
+        for (index, suggestion) in proposed.speaker_suggestions.enumerated() {
+            if validSpeakerSuggestion(suggestion, transcript: transcript) { suggestions.append(suggestion) }
+            else { rejectedSuggestions.append(index) }
+        }
+        return (.init(edits: edits, speaker_suggestions: suggestions), rejectedEdits, rejectedSuggestions)
+    }
+
+    private static func editRejectionReason(_ edit: TranscriptCorrections.Edit, transcript: Transcript) -> String? {
+        guard transcript.segments.indices.contains(edit.segment_index) else { return "invalid_segment" }
+        let old = transcript.segments[edit.segment_index].text
+        guard edit.original_text == old else { return "original_text_mismatch" }
+        guard !edit.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return "empty_text" }
+        guard !edit.text.contains(where: { $0.isNewline || $0.asciiValue.map { $0 < 32 } == true }) else { return "invalid_text" }
+        guard edit.text.count <= max(40, old.count + old.count / 3) else { return "excessive_length" }
+        guard numbers(old) == numbers(edit.text) else { return "changed_numbers" }
+        guard negations(old) == negations(edit.text) else { return "changed_negations" }
+        guard distance(old.lowercased(), edit.text.lowercased()) <= max(2, old.count / 4) else { return "edit_too_large" }
+        return nil
+    }
+
+    private static func validSpeakerSuggestion(_ suggestion: TranscriptCorrections.SpeakerSuggestion, transcript: Transcript) -> Bool {
+        if SpeakerAttribution.cleanName(suggestion.name) == suggestion.name,
+           !suggestion.segment_indices.isEmpty, !suggestion.reason.isEmpty, suggestion.reason.count <= 1000,
+           suggestion.evidence_segment_indices.allSatisfy({ transcript.segments.indices.contains($0) }),
+           suggestion.segment_indices.allSatisfy({ transcript.segments.indices.contains($0)
+               && transcript.participant_roster?.permits(suggestion.name, for: transcript.segments[$0]) == true }) { return true }
+        return SpeakerAttribution.cleanName(suggestion.name) == suggestion.name
+            && !suggestion.segment_indices.isEmpty && !suggestion.evidence_segment_indices.isEmpty
+            && !suggestion.reason.isEmpty && suggestion.reason.count <= 1000
+            && suggestion.segment_indices.allSatisfy({ transcript.segments.indices.contains($0) && transcript.segments[$0].speaker_name == nil })
+            && suggestion.evidence_segment_indices.allSatisfy({ transcript.segments.indices.contains($0) })
+            && suggestion.evidence_segment_indices.contains(where: {
+                let segment = transcript.segments[$0]
+                return segment.text.localizedCaseInsensitiveContains(suggestion.name)
+                    || segment.speaker_name?.caseInsensitiveCompare(suggestion.name) == .orderedSame
+            })
     }
 
     private static func numbers(_ text: String) -> [String] {
@@ -170,10 +236,19 @@ enum TranscriptPostProcessor {
             if let selected {
                 report.harness = selected.kind.rawValue
                 let response = try await selected.complete(prompt: input, schema: schema, directory: work, timeout: options.timeout)
-                let corrections = try JSONDecoder().decode(TranscriptCorrections.self, from: response)
-                let corrected = try validate(corrections, transcript: transcript)
+                let proposed = try JSONDecoder().decode(TranscriptCorrections.self, from: response)
+                let filtered = filter(proposed, transcript: transcript)
+                let corrections = filtered.corrections
+                report.rejected_edits = filtered.rejectedEdits
+                report.rejected_speaker_suggestions = filtered.rejectedSpeakerSuggestions
+                var corrected = try validate(corrections, transcript: transcript)
+                if let roster = transcript.participant_roster { corrected.segments = roster.relabel(corrected.segments) }
+                let speakerRelabels = zip(transcript.segments, corrected.segments).filter {
+                    $0.speaker != $1.speaker || $0.speaker_name != $1.speaker_name || $0.attribution != $1.attribution
+                }.count
+                report.speaker_relabels = speakerRelabels
                 guard try Data(contentsOf: transcriptURL) == original else { throw PostProcessingFailure.transcriptChanged }
-                if !corrections.edits.isEmpty {
+                if !corrections.edits.isEmpty || speakerRelabels > 0 {
                     let backup = directory.appendingPathComponent("postprocess-backup-" + UUID().uuidString)
                     try fm.createDirectory(at: backup, withIntermediateDirectories: false)
                     try original.write(to: backup.appendingPathComponent("transcript.json"), options: .atomic)

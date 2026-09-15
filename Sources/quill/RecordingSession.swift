@@ -13,9 +13,16 @@ final class RecordingSession {
     private let localSpeakerName = Config.localSpeakerName()
     private let sharedMicrophone = Config.sharedMicrophone()
     private var seenCaptions: Set<String> = []
+    private var roster: ParticipantRoster?
+    private var lastRosterObservation = -Double.infinity
+    private var lastRosterWrite = -Double.infinity
 
     func recordSpeakers(_ observation: SpeakerObservation) {
         guard observation.observed_at >= startedAt.timeIntervalSince1970 else { return }
+        if observation.source == "meeting_roster" {
+            guard observation.observed_at > lastRosterObservation else { return }
+            lastRosterObservation = observation.observed_at
+        }
         if let text = observation.text {
             let key = observation.meeting_id + "\n" + observation.names.joined(separator: "\n") + "\n" + text
             guard seenCaptions.insert(key).inserted else { return }
@@ -30,6 +37,13 @@ final class RecordingSession {
                 defer { try? handle.close() }
                 try handle.seekToEnd()
                 try handle.write(contentsOf: data)
+            }
+            if observation.participants != nil || !observation.names.isEmpty {
+                roster?.observe(observation, localName: localSpeakerName)
+                if let roster, observation.observed_at - lastRosterWrite >= 2 {
+                    try JSONEncoder().encode(roster).write(to: dir.appendingPathComponent("participants.json"), options: .atomic)
+                    lastRosterWrite = observation.observed_at
+                }
             }
         } catch {
             FileHandle.standardError.write(Data("speaker observation write failed: \(error)\n".utf8))
@@ -55,6 +69,12 @@ final class RecordingSession {
         }
         try FileManager.default.createDirectory(at: candidate, withIntermediateDirectories: true)
         dir = candidate
+        roster = ParticipantRoster(audio_started_at: startedAt.timeIntervalSince1970)
+        if let name = localSpeakerName, !sharedMicrophone {
+            roster?.observe(SpeakerObservation(observed_at: startedAt.timeIntervalSince1970, meeting_id: "local", names: [name],
+                                               source: "local_microphone", is_local: true), localName: name)
+        }
+        if let roster { try JSONEncoder().encode(roster).write(to: dir.appendingPathComponent("participants.json"), options: .atomic) }
     }
 
     /// Start both tracks. If the mic fails after the system tap started, the
@@ -82,6 +102,10 @@ final class RecordingSession {
         let micStart = mic.firstBufferAt ?? startedAt
         let systemStart = system.firstBufferAt ?? startedAt
         let earliest = min(micStart, systemStart)
+        roster?.audio_started_at = earliest.timeIntervalSince1970
+        if let roster, let data = try? JSONEncoder().encode(roster) {
+            try? data.write(to: dir.appendingPathComponent("participants.json"), options: .atomic)
+        }
 
         var meta: [String: Any] = [
             "started": iso.string(from: startedAt),

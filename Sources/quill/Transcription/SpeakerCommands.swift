@@ -1,6 +1,7 @@
 import ArgumentParser
 import Foundation
 import FluidAudio
+import Darwin
 
 struct Transcribe: ParsableCommand {
     static let configuration = CommandConfiguration(abstract: "Transcribe a completed recording with the selected engine, without running cleanup or the archive hook.")
@@ -40,7 +41,7 @@ struct Transcribe: ParsableCommand {
             dir = URL(fileURLWithPath: (output as NSString).expandingTildeInPath).standardizedFileURL
             guard !fm.fileExists(atPath: dir.path) else { throw ValidationError("Preview folder already exists; choose a new path.") }
             try fm.createDirectory(at: dir, withIntermediateDirectories: true)
-            for file in ["meta.json", "speaker-observations.jsonl"] where fm.fileExists(atPath: original.appendingPathComponent(file).path) {
+            for file in ["meta.json", "speaker-observations.jsonl", "participants.json"] where fm.fileExists(atPath: original.appendingPathComponent(file).path) {
                 try fm.copyItem(at: original.appendingPathComponent(file), to: dir.appendingPathComponent(file))
             }
             for file in ["mic.caf", "system.caf"] where fm.fileExists(atPath: original.appendingPathComponent(file).path) {
@@ -76,7 +77,13 @@ struct LabelSpeaker: ParsableCommand {
         guard let name = SpeakerAttribution.cleanName(name) else { throw ValidationError("Enter a non-empty speaker name without line breaks.") }
         let dir = URL(fileURLWithPath: (recording as NSString).expandingTildeInPath)
         let url = dir.appendingPathComponent("transcript.json")
-        var transcript = try JSONDecoder().decode(Transcript.self, from: Data(contentsOf: url))
+        let fm = FileManager.default
+        let lock = open(dir.appendingPathComponent(".postprocess.lock").path, O_CREAT | O_RDWR | O_CLOEXEC, 0o600)
+        guard lock >= 0 else { throw ValidationError("Could not lock this transcript.") }
+        defer { flock(lock, LOCK_UN); close(lock) }
+        guard flock(lock, LOCK_EX | LOCK_NB) == 0 else { throw ValidationError("Transcript processing is already running.") }
+        let original = try Data(contentsOf: url)
+        var transcript = try JSONDecoder().decode(Transcript.self, from: original)
         func matches(_ segment: Transcript.Segment) -> Bool {
             soleRemoteSpeaker ? (segment.source == "system" || segment.speaker == "them") : segment.speaker == speaker
         }
@@ -84,16 +91,48 @@ struct LabelSpeaker: ParsableCommand {
               soleRemoteSpeaker || !["them", "system_unknown", "mic_unknown"].contains(speaker ?? "") else {
             throw ValidationError("Choose a separated speaker ID; mixed or unknown speech cannot receive a person's name.")
         }
-        // Keep an exact backup. Corrections are scoped to these speaker IDs;
-        // regenerating diarization does not carry names to possibly different IDs.
-        let backup = dir.appendingPathComponent("transcript-before-label-\(UUID().uuidString).json")
-        try FileManager.default.copyItem(at: url, to: backup)
+        let meta = try SessionMeta.read(from: dir)
+        var roster = transcript.participant_roster ?? meta.participantRoster ?? ParticipantRoster(audio_started_at: meta.audioStartedAt ?? 0)
+        if soleRemoteSpeaker {
+            // The explicit confirmation is durable evidence, including for
+            // intervals where active-speaker UI and acoustic VAD were missing.
+            roster.confirmed_sole_remote_speaker = name
+            let start = roster.audio_started_at
+            let end = start + Double(transcript.segments.map(\.end_ms).max() ?? 0) / 1000
+            roster.participants = [.init(name: name, is_local: false, first_seen: start, last_seen: end, sources: ["user_confirmation"])]
+            if let localName = meta.localSpeakerName {
+                roster.participants.insert(.init(name: localName, is_local: true, first_seen: start, last_seen: end,
+                                                 sources: ["local_microphone", "user_confirmation"]), at: 0)
+            }
+        }
+        let backup = dir.appendingPathComponent("speaker-label-backup-\(UUID().uuidString)")
+        try fm.createDirectory(at: backup, withIntermediateDirectories: false)
+        let files = ["transcript.json", "transcript.md", "participants.json", "postprocess.json"]
+        for file in files where fm.fileExists(atPath: dir.appendingPathComponent(file).path) {
+            try fm.copyItem(at: dir.appendingPathComponent(file), to: backup.appendingPathComponent(file))
+        }
         for index in transcript.segments.indices where matches(transcript.segments[index]) {
             transcript.segments[index].speaker_name = name
             transcript.segments[index].attribution = "manual"
+            if soleRemoteSpeaker {
+                transcript.segments[index].speaker = SpeakerAttribution.namedSpeakerID(.init(name: name, source: "manual", evidence_count: 1), source: "system")
+            }
         }
         transcript.schema_version = 2
-        try transcript.write(to: dir)
+        transcript.participant_roster = roster
+        guard try Data(contentsOf: url) == original else { throw ValidationError("Transcript changed during labelling.") }
+        do {
+            try transcript.write(to: dir)
+            try JSONEncoder().encode(roster).write(to: dir.appendingPathComponent("participants.json"), options: .atomic)
+        } catch {
+            for file in ["transcript.json", "transcript.md", "participants.json"] {
+                let saved = backup.appendingPathComponent(file), target = dir.appendingPathComponent(file)
+                if fm.fileExists(atPath: saved.path) { try Data(contentsOf: saved).write(to: target, options: .atomic) }
+                else if fm.fileExists(atPath: target.path) { try fm.removeItem(at: target) }
+            }
+            throw error
+        }
+        print("Backup: \(backup.path)")
         print("Labelled \(speaker ?? "the verified sole remote speaker") as \(name). Run the archive sync to publish the correction.")
     }
 }
