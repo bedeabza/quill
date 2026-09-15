@@ -137,6 +137,8 @@ enum ParticipantEvidence {
                 let names = nodes.indices.filter { nodes[$0].role == "AXStaticText" && descendant($0, of: index) && !nodes[$0].text.isEmpty }
                 if names.count == 1, let name = names.first { add(nodes[name].text) }
             }
+        } else if service == "Slack" {
+            for tile in SlackTileEvidence.tiles(nodes) { add(tile.name) }
         } else if service == "Zoom" {
             for node in nodes where node.roleDescription == "video render" {
                 if let video = ZoomSpeakerEvidence.participant(description: node.text, frame: .zero, localName: localName) { add(video.name, local: video.isLocal) }

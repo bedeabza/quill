@@ -1,5 +1,31 @@
 # Speaker names validation
 
+## Slack huddle speaker detection, 2026-09-15
+
+The native Slack test huddle exposed participants as `AXCell` elements with
+`p-huddle_peer_tile` under `p-huddle_grid_component`. Each cell's accessible
+description was `View <name>'s profile`. Two live snapshots captured the
+`p-huddle_peer_tile__mic_overlay` / `p-huddle_peer_tile__overlay--active_speaker`
+marker moving from the remote participant to the local participant.
+
+The adapter caches the peer cell and samples its bounded subtree every 250 ms,
+because Slack inserts and removes the overlay. It validates the peer name
+before and after each sample, excludes the configured local name, and refuses
+unknown layouts, duplicate names, nested peers, failed reads, and slow or oversized
+subtrees. Native Slack's unique joined peer-grid window supplies speaker data
+when the recording was linked to its main chat window. Browser discovery remains
+scoped to the linked meeting document.
+
+The rebuilt diagnostic produced five consecutive samples naming the remote
+participant and persisted both roster names in diagnostic observations for both
+native window identities, without restarting the running recorder. Nine new tests
+cover the captured transitions, browser document scoping, exact profile labels,
+self/roster handling, mute and pin controls, renames, duplicate names, and read
+failures. The full suite passed 138 tests, with 9 optional tests skipped.
+A live browser huddle and a call with several remote participants remain untested.
+No complete participant count was exposed, so the Slack roster does not authorize
+sole-speaker inference during missing activity observations.
+
 ## Continuous speaker discovery update, 2026-09-10
 
 A completed 28-minute call retained tile observations only between 26 and 85 seconds. The saved observations cannot establish the exact UI failure or identify the later unnamed speech. No historical transcript was relabelled.

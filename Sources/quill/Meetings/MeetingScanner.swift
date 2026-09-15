@@ -96,6 +96,7 @@ actor MeetingScanner {
     private var tiles: [String: [CachedTile]] = [:]
     private var rosters: [String: SpeakerObservation] = [:]
     private var speakerRefresh: [String: SpeakerTreeRefresh<AXUIElement>] = [:]
+    private var slackSpeakerWindows: [pid_t: AXUIElement] = [:]
     private var zoomVideos: [String: [AXUIElement]] = [:]
     private let zoomDetector = ZoomWindowSpeakerDetector()
     private var zoomScores: [String: [String: Double]] = [:]
@@ -106,7 +107,7 @@ actor MeetingScanner {
     /// Fast path while recording: read only cached tile indicators and names,
     /// rather than walking every browser window four times per second.
     func speakerActivity(for meetingID: String) async -> SpeakerObservation? {
-        guard AXIsProcessTrusted(), let entry = known[meetingID], !bool(entry.window, kAXMinimizedAttribute) else { return nil }
+        guard AXIsProcessTrusted(), let entry = known[meetingID], !bool(speakerWindow(entry), kAXMinimizedAttribute) else { return nil }
         if let tab = entry.tab, !bool(tab, kAXValueAttribute) && !bool(tab, kAXSelectedAttribute) {
             // Speaking indicators in a hidden tab may be stale. Keep discovering
             // membership from the established document through the slower poll.
@@ -129,9 +130,13 @@ actor MeetingScanner {
               let cached = tiles[meetingID], !cached.isEmpty else { return nil }
         let started = Date().timeIntervalSince1970
         var names: [String] = []
+        let deadline = ProcessInfo.processInfo.systemUptime + 0.15
         let localName = Config.localSpeakerName()
         for tile in cached {
-            guard !isDestroyed(tile.indicator), SpeakerAttribution.cleanName(string(tile.nameElement, kAXValueAttribute)) == tile.name else {
+            let currentName = tile.kind == .slackPeer
+                ? SlackTileEvidence.name(in: string(tile.nameElement, kAXDescriptionAttribute))
+                : SpeakerAttribution.cleanName(string(tile.nameElement, kAXValueAttribute))
+            guard !isDestroyed(tile.indicator), currentName == tile.name else {
                 invalidateSpeakerTiles(meetingID)
                 return nil
             }
@@ -142,7 +147,22 @@ actor MeetingScanner {
             }
             let isLocal = tile.isLocal || SpeakerAttribution.isLocalName(tile.name, localName: localName)
                 || (tile.kind == .meet && classes.contains("eQJ1qd"))
-            if !isLocal && tile.kind.isSpeaking(classes) { names.append(tile.name) }
+            guard !isLocal else { continue }
+            if tile.kind == .slackPeer {
+                guard let speaking = SlackTileEvidence.activity(root: tile.indicator, expectedName: tile.name,
+                    hasTime: { ProcessInfo.processInfo.systemUptime < deadline }, read: { element in
+                        let role = string(element, kAXRoleAttribute)
+                        guard !role.isEmpty, let descendants = children(element, attribute: kAXChildrenAttribute) else { return nil }
+                        let node = SpeakerUINode(parent: nil, role: role,
+                            text: role == "AXCell" ? string(element, kAXDescriptionAttribute) : "",
+                            classes: Set(strings(element, "AXDOMClassList")))
+                        return (node, descendants)
+                    }) else {
+                    invalidateSpeakerTiles(meetingID)
+                    return nil
+                }
+                if speaking { names.append(tile.name) }
+            } else if tile.kind.isSpeaking(classes) { names.append(tile.name) }
         }
         let ended = Date().timeIntervalSince1970
         guard ended - started <= 0.2 else { return nil }
@@ -157,9 +177,18 @@ actor MeetingScanner {
         speakerRefresh[id]?.invalidate()
     }
 
+    private func speakerWindow(_ entry: Known) -> AXUIElement {
+        // Native Slack's chat and pop-out expose the same joined huddle. The
+        // recording may be linked to chat while the participant grid is popped out.
+        if !entry.isBrowser, entry.meeting.service == "Slack" {
+            return slackSpeakerWindows[entry.pid] ?? entry.window
+        }
+        return entry.window
+    }
+
     private func refreshSpeakerTiles(_ entry: Known) {
         let id = entry.meeting.id
-        guard let root = entry.isBrowser ? entry.document : entry.window,
+        guard let root = entry.isBrowser ? entry.document : speakerWindow(entry),
               !isDestroyed(root) else {
             invalidateSpeakerTiles(id)
             return
@@ -180,10 +209,10 @@ actor MeetingScanner {
             guard !role.isEmpty, let descendants = children(element, attribute: kAXChildrenAttribute) else { return nil }
             var text = ""
             if role == kAXStaticTextRole { text = string(element, kAXValueAttribute) }
-            else if ["AXMenuItem", "AXButton", "AXTab", "AXHeading", "AXTabGroup"].contains(role) {
+            else if ["AXMenuItem", "AXButton", "AXTab", "AXHeading", "AXTabGroup", "AXCell"].contains(role) {
                 let title = string(element, kAXTitleAttribute), description = string(element, kAXDescriptionAttribute)
                 text = title == description || description.isEmpty ? title : (title.isEmpty ? description : title + " " + description)
-                if role == "AXTabGroup", !description.isEmpty { text = description }
+                if ["AXTabGroup", "AXCell"].contains(role), !description.isEmpty { text = description }
                 if ["AXButton", "AXTab", "AXHeading"].contains(role), !title.isEmpty, !description.isEmpty, title != description { text = title + "\n" + description }
             }
             let node = SpeakerUINode(parent: parent, role: role, text: text,
@@ -201,7 +230,9 @@ actor MeetingScanner {
         guard let snapshot else { return }
         let nodes = snapshot.map(\.node)
         let members = ParticipantEvidence.members(nodes, service: entry.meeting.service, localName: Config.localSpeakerName())
-        let count = ParticipantEvidence.participantCount(nodes)
+        // Slack chat can contain counts for unrelated conversations. Its peer
+        // grid proves membership, but no complete headcount was exposed in testing.
+        let count = entry.meeting.service == "Slack" ? nil : ParticipantEvidence.participantCount(nodes)
         let complete = count == members.filter { !$0.is_local }.count + 1 && Config.localSpeakerName() != nil
         rosters[id] = SpeakerObservation(observed_at: Date().timeIntervalSince1970, meeting_id: id, names: [],
             source: "meeting_roster", participants: members, participant_count: count, roster_complete: complete)
@@ -209,6 +240,7 @@ actor MeetingScanner {
         switch entry.meeting.service {
         case "Google Meet": detected = MeetTileEvidence.tiles(nodes)
         case "Microsoft Teams": detected = TeamsTileEvidence.tiles(nodes)
+        case "Slack": detected = SlackTileEvidence.tiles(nodes)
         default: detected = []
         }
         tiles[id] = detected.map {
@@ -225,6 +257,7 @@ actor MeetingScanner {
         var result = MeetingScan()
         let pids = Set(apps.map(\.pid))
         enabledAccessibility.formIntersection(pids)
+        slackSpeakerWindows = slackSpeakerWindows.filter { pids.contains($0.key) }
         for entry in known.values where !pids.contains(entry.pid) {
             result.observations[entry.meeting.id] = .ended
         }
@@ -242,6 +275,15 @@ actor MeetingScanner {
             }
             guard let elements = children(root, attribute: kAXWindowsAttribute) else { continue }
             let windows = elements.map { readWindow($0, browser: app.service == nil) }
+            if app.service == "Slack" {
+                let huddles = windows.filter { window in
+                    hasCallControls(window, service: "Slack") && window.nodes.contains { node in
+                        node.role == "AXCell" && SlackTileEvidence.name(in: node.text) != nil
+                            && strings(node.element, "AXDOMClassList").contains(SlackTileEvidence.peerClass)
+                    }
+                }
+                slackSpeakerWindows[app.pid] = huddles.count == 1 ? huddles.first?.element : nil
+            }
 
             for window in windows {
                 let leave = hasCallControls(window, service: app.service)

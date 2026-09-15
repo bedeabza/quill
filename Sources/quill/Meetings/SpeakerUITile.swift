@@ -11,12 +11,13 @@ struct SpeakerUINode {
 }
 
 enum SpeakerUITileKind {
-    case meet, teamsFrame
+    case meet, teamsFrame, slackPeer
 
     func recognizes(_ classes: Set<String>) -> Bool {
         switch self {
         case .meet: return classes.isSuperset(of: ["lH9pqf", "atLQQ"])
         case .teamsFrame: return classes.contains("fui-Flex")
+        case .slackPeer: return classes.contains(SlackTileEvidence.peerClass)
         }
     }
 
@@ -24,6 +25,7 @@ enum SpeakerUITileKind {
         switch self {
         case .meet: return MeetTileEvidence.isSpeaking(classes: classes)
         case .teamsFrame: return classes.contains("vdi-frame-occlusion")
+        case .slackPeer: return false // Slack's transient child overlay is sampled separately.
         }
     }
 }

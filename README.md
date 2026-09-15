@@ -426,6 +426,15 @@ to Start/Join controls after leaving begins the usual 30-second stop countdown,
 even when the Slack window or tab stays open. Browser huddle controls are read
 only from their Slack page. Hidden or incomplete reads do not infer an end.
 
+Slack speaker names come from the huddle's participant grid in the desktop app
+and browser. Quill samples each peer's speaking indicator, excludes your local
+name, and discovers participants as they join, leave, or change their display
+name. Keep the huddle grid visible for live speaker attribution. The native
+pop-out supplies speaker evidence even when recording was linked to Slack's
+main window. Muting, video state, chat profiles, and roster membership alone
+never count as speaking. Ambiguous or unavailable indicators leave speech
+unnamed rather than assigning it to another participant.
+
 Browser/app versions and accessible labels vary. Closed tabs and windows are
 end signals; recognized English-language end screens are also supported. A
 hidden control, mute, silence, switching tabs, or a failed Accessibility read
