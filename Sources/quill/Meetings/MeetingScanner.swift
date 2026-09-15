@@ -9,10 +9,7 @@ struct MeetingApp: Sendable {
     @MainActor static func running() -> [MeetingApp] {
         NSWorkspace.shared.runningApplications.compactMap { app in
             guard let bundle = app.bundleIdentifier?.lowercased() else { return nil }
-            let service: String?
-            if bundle == "us.zoom.xos" { service = "Zoom" }
-            else if bundle == "com.microsoft.teams2" || bundle == "com.microsoft.teams" { service = "Microsoft Teams" }
-            else { service = nil }
+            let service = MeetingEvidence.nativeService(bundleID: bundle)
             let browsers = ["com.brave.browser", "com.google.chrome", "com.microsoft.edgemac",
                             "com.apple.safari", "org.mozilla.firefox", "company.thebrowser.browser",
                             "com.vivaldi.vivaldi", "com.operasoftware.opera", "com.kagi.kagimacOS".lowercased(),
@@ -80,6 +77,8 @@ actor MeetingScanner {
         let startedAt: Double
         let endedAt: Double
         var documents: [AXUIElement: Window] = [:]
+        var browserTabs: [Node] = []
+        var browserDocuments: [Node] = []
     }
     private var known: [String: Known] = [:]
     private var serial = 0
@@ -248,7 +247,7 @@ actor MeetingScanner {
                 let leave = hasCallControls(window, service: app.service)
                 let ended = window.nodes.contains { MeetingEvidence.isEndMessage($0.text) }
                 if let service = app.service {
-                    if leave && !ended {
+                    if leave && (service == "Slack" || !ended) {
                         let existing = known.values.first { $0.pid == app.pid && CFEqual($0.window, window.element) }
                         let id = existing?.meeting.id ?? nextID(pid: app.pid)
                         known[id] = Known(meeting: DetectedMeeting(id: id, app: app.name, service: service),
@@ -259,22 +258,36 @@ actor MeetingScanner {
 
                 // A URL establishes a meeting. Tab labels only maintain an already
                 // established identity, so arbitrary page titles cannot start capture.
-                for node in window.nodes where node.isTab || node.role == "AXWebArea" {
-                    let code = MeetingEvidence.meetCode(in: node.url) ?? MeetingEvidence.meetCode(in: node.text)
-                    if ended && !node.isTab { continue }
-                    let matchingTab = node.isTab ? node.element : window.nodes.first(where: {
+                for node in window.browserTabs + window.browserDocuments {
+                    let code = MeetingEvidence.service(url: node.url) == "Slack" ? nil
+                        : MeetingEvidence.meetCode(in: node.url) ?? MeetingEvidence.meetCode(in: node.text)
+                    if ended && !node.isTab && MeetingEvidence.service(url: node.url) != "Slack" { continue }
+                    let matchingTab = node.isTab ? node.element : window.browserTabs.first(where: {
                         $0.isTab && (code != nil ? MeetingEvidence.meetCode(in: $0.text) == code : $0.selected)
                     })?.element
                     let existing = known.values.first { entry in
-                        entry.pid == app.pid && (code != nil ? entry.code == code : matchingTab.map { tab in entry.tab.map { CFEqual($0, tab) } == true } == true)
+                        entry.pid == app.pid && (code != nil ? entry.code == code
+                            : matchingTab.map { tab in entry.tab.map { CFEqual($0, tab) } == true } == true
+                                || (!node.isTab && entry.document.map { CFEqual($0, node.element) } == true))
                     }
                     guard let service = MeetingEvidence.service(url: node.url) ?? existing?.meeting.service,
-                          code != nil || leave || existing != nil else { continue }
+                          service == "Slack" || code != nil || leave || existing != nil else { continue }
+                    if existing?.meeting.service == "Slack", service != "Slack" { continue }
+                    if service == "Slack", existing == nil {
+                        // Never borrow another tab's call controls or a meeting
+                        // code mentioned in Slack chat to establish a huddle.
+                        let visible = !bool(window.element, kAXMinimizedAttribute) && (matchingTab.map { tab in
+                            window.browserTabs.contains { $0.selected && CFEqual($0.element, tab) }
+                        } ?? true)
+                        guard let document = window.documents[node.element],
+                              slackState(document, visible: visible) == .joined else { continue }
+                    }
                     let id = existing?.meeting.id ?? nextID(pid: app.pid)
                     let tab = matchingTab ?? existing?.tab
                     known[id] = Known(meeting: DetectedMeeting(id: id, app: app.name, service: service),
                                       pid: app.pid, window: window.element, tab: tab,
-                                      document: node.isTab ? existing?.document : node.element, code: code, isBrowser: true)
+                                      document: node.isTab ? existing?.document : node.element,
+                                      code: service == "Slack" ? nil : code, isBrowser: true)
                 }
             }
 
@@ -312,7 +325,7 @@ actor MeetingScanner {
                     } else if app.service != nil { nodes = readTree(entry.window, skipWebContent: false, readClasses: true).nodes }
                     else if let document = entry.document, !isDestroyed(document),
                             window.nodes.contains(where: { $0.role == "AXWebArea" && CFEqual($0.element, document) }),
-                            entry.tab.map({ tab in window.nodes.contains(where: { $0.isTab && $0.selected && CFEqual($0.element, tab) }) }) ?? true {
+                            entry.tab.map({ tab in window.browserTabs.contains(where: { $0.selected && CFEqual($0.element, tab) }) }) ?? true {
                         nodes = readTree(document, skipWebContent: false, readClasses: true).nodes
                     } else { nodes = [] }
                     let observedEnd = captureEnded ?? Date().timeIntervalSince1970
@@ -392,26 +405,54 @@ actor MeetingScanner {
                     }
                 }
                 if app.service != nil {
+                    if entry.meeting.service == "Slack" {
+                        let state = slackState(window, visible: !bool(entry.window, kAXMinimizedAttribute))
+                        let isEnded = endState.isEnded(entry.meeting.id, endScreen: state == .ended, inCall: state == .joined)
+                        result.observations[entry.meeting.id] = isEnded ? .ended : (state == .joined ? .present(entry.meeting) : .unknown)
+                        continue
+                    }
                     // Never infer end merely from a temporarily hidden Leave button.
                     result.observations[entry.meeting.id] = ended && !leave && window.complete ? .ended : (leave ? .present(entry.meeting) : .unknown)
                     continue
                 }
-                let tabPresent = window.nodes.contains { node in
+                let tabPresent = window.browserTabs.contains { node in
                     guard node.isTab else { return false }
                     return entry.tab.map { CFEqual($0, node.element) } == true
                         || (entry.code != nil && MeetingEvidence.meetCode(in: node.text) == entry.code)
                 }
-                let documentPresent = window.nodes.contains { node in
+                let documentPresent = window.browserDocuments.contains { node in
                     guard node.role == "AXWebArea" else { return false }
                     return entry.document.map { CFEqual($0, node.element) } == true
                         || (entry.code != nil && MeetingEvidence.meetCode(in: node.url) == entry.code)
+                }
+                if entry.meeting.service == "Slack" {
+                    let visible = !bool(entry.window, kAXMinimizedAttribute) && (entry.tab.map { tab in
+                        window.browserTabs.contains { $0.selected && CFEqual($0.element, tab) }
+                    } ?? documentPresent)
+                    let document = entry.document.flatMap { window.documents[$0] }
+                    let state = document.map { slackState($0, visible: visible) } ?? .unknown
+                    let navigatedAway = visible && window.complete && window.browserDocuments.contains { node in
+                        node.role == "AXWebArea" && entry.document.map { CFEqual($0, node.element) } == true
+                            && !node.url.isEmpty && MeetingEvidence.service(url: node.url) != "Slack"
+                    }
+                    if endState.isEnded(entry.meeting.id, endScreen: state == .ended || navigatedAway, inCall: state == .joined) {
+                        result.observations[entry.meeting.id] = .ended
+                    } else if state == .joined || (!visible && (tabPresent || documentPresent)) {
+                        result.observations[entry.meeting.id] = .present(entry.meeting)
+                    } else if !tabPresent && !documentPresent, let tab = entry.tab, window.complete,
+                              !window.browserTabs.isEmpty || isDestroyed(tab) {
+                        result.observations[entry.meeting.id] = .ended
+                    } else {
+                        result.observations[entry.meeting.id] = .unknown
+                    }
+                    continue
                 }
                 if endState.isEnded(entry.meeting.id, endScreen: documentPresent && ended && !leave, inCall: documentPresent && leave) {
                     result.observations[entry.meeting.id] = .ended
                 } else if tabPresent || documentPresent {
                     result.observations[entry.meeting.id] = .present(entry.meeting)
                 } else if let tab = entry.tab, window.complete,
-                          window.nodes.contains(where: \.isTab) || isDestroyed(tab) {
+                          !window.browserTabs.isEmpty || isDestroyed(tab) {
                     result.observations[entry.meeting.id] = .ended
                 } else {
                     result.observations[entry.meeting.id] = .unknown
@@ -438,7 +479,15 @@ actor MeetingScanner {
         return result
     }
 
+    private func slackState(_ window: Window, visible: Bool) -> SlackHuddleEvidence.State {
+        SlackHuddleEvidence.state(controls: window.nodes.filter { SlackHuddleEvidence.isControl(role: $0.role) }.map(\.text),
+                                  complete: window.complete, visible: visible)
+    }
+
     private func hasCallControls(_ window: Window, service: String? = nil) -> Bool {
+        if service == "Slack" {
+            return SlackHuddleEvidence.hasJoinedControls(window.nodes.filter { SlackHuddleEvidence.isControl(role: $0.role) }.map(\.text))
+        }
         if MeetingEvidence.hasCallControls(window.nodes.filter { $0.role == kAXButtonRole }.map(\.text)) { return true }
         guard service == "Zoom" else { return false }
         let labels = window.nodes.filter { $0.role == "AXTabGroup" && $0.roleDescription == "video render" }.map(\.text)
@@ -453,8 +502,10 @@ actor MeetingScanner {
     private func readWindow(_ window: AXUIElement, browser: Bool) -> Window {
         var result = readTree(window, skipWebContent: browser)
         if browser {
-            let documents = result.nodes.filter { $0.role == "AXWebArea" }
-            for document in documents where MeetingEvidence.service(url: document.url) != nil || MeetingEvidence.meetCode(in: document.text) != nil {
+            // Keep browser chrome separate from Slack's own Home/Messages tabs.
+            result.browserTabs = result.nodes.filter(\.isTab)
+            result.browserDocuments = result.nodes.filter { $0.role == "AXWebArea" }
+            for document in result.browserDocuments where MeetingEvidence.service(url: document.url) != nil || MeetingEvidence.meetCode(in: document.text) != nil {
                 let contents = readTree(document.element, skipWebContent: false)
                 result.documents[document.element] = contents
                 result.nodes.append(contentsOf: contents.nodes.dropFirst())

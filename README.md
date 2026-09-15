@@ -412,11 +412,19 @@ turned off and back on.
 
 Detection uses macOS Accessibility, without browser extensions. Brave, Chrome,
 Edge, Safari, Firefox, Arc, and other browsers registered to handle web URLs are
-inspected for exposed meeting tabs. Desktop Teams and Zoom are inspected for
-call controls and their meeting windows. Google Meet, web Teams, and web Zoom
+inspected for exposed meeting tabs. Desktop Teams, Zoom, and Slack are inspected for
+call controls and their meeting windows. Google Meet, web Teams, web Zoom, and Slack
 pages can be recognized when the browser exposes the relevant meeting URL.
 Background tab labels maintain a previously identified meeting, but cannot
 start recording by themselves.
+
+Slack huddles use the same automatic recording toggle in the desktop app and
+browser. Detection requires joined huddle controls, such as Leave huddle or
+Leave with microphone controls. Opening Slack, browsing chats, or seeing a
+Start/Join huddle button does not start recording. A complete, visible return
+to Start/Join controls after leaving begins the usual 30-second stop countdown,
+even when the Slack window or tab stays open. Browser huddle controls are read
+only from their Slack page. Hidden or incomplete reads do not infer an end.
 
 Browser/app versions and accessible labels vary. Closed tabs and windows are
 end signals; recognized English-language end screens are also supported. A
