@@ -144,10 +144,13 @@ struct VoiceMemory: Codable, Sendable {
                 byName[name, default: []].append(sample)
                 continue
             }
-            guard let identity = analysis.voice_identities?[sample.speaker_id], identity.source == "meeting_voice" else { continue }
             let spans = analysis.named_spans.filter { $0.start < sample.end && $0.end > sample.start }
-            guard spans.allSatisfy({ $0.identity.name.caseInsensitiveCompare(identity.name) == .orderedSame }) else { continue }
             let trusted = spans.filter { ["meeting_tile", "zoom_border"].contains($0.identity.source) && $0.identity.evidence_count >= 3 }
+            guard let identity = trusted.first?.identity,
+                  SpeakerAttribution.cleanName(identity.name) == identity.name,
+                  spans.allSatisfy({ $0.identity.name.caseInsensitiveCompare(identity.name) == .orderedSame }) else { continue }
+            // A globally mixed acoustic cluster does not invalidate a clean,
+            // contemporaneously named sample inside it. Enroll only this window.
             let coverage = Self.duration(trusted.map { (max(sample.start, $0.start), min(sample.end, $0.end)) })
             let speech = Self.duration(analysis.turns.filter { $0.speaker_id == sample.speaker_id && $0.start < sample.end && $0.end > sample.start }
                 .map { (max(sample.start, $0.start), min(sample.end, $0.end)) })

@@ -70,6 +70,46 @@ final class VoiceMemoryTests: XCTestCase, @unchecked Sendable {
         XCTAssertTrue(memory.identities(for: mixed, roster: nil).isEmpty)
     }
 
+    func testCleanNamedWindowsCanEnrollPeopleFromOneMixedAcousticCluster() {
+        var first = analysis(name: "Alice"), second = analysis(1, name: "Bob")
+        second.turns = second.turns.map { .init(speaker_id: $0.speaker_id, start: $0.start + 150, end: $0.end + 150) }
+        second.named_spans = second.named_spans.map { .init(start: $0.start + 150, end: $0.end + 150, identity: $0.identity) }
+        second.voice_samples = second.voice_samples?.map { .init(speaker_id: $0.speaker_id, start: $0.start + 150, end: $0.end + 150, embedding: $0.embedding) }
+        first.turns += second.turns
+        first.named_spans += second.named_spans
+        first.voice_samples! += second.voice_samples!
+        first.voice_identities = [:]
+        XCTAssertTrue(SpeakerAttribution.voiceNames(turns: first.turns, spans: first.named_spans).isEmpty)
+        var memory = VoiceMemory()
+        XCTAssertEqual(memory.learn(first, recording: "mixed"), 2)
+        XCTAssertEqual(Set(memory.profiles.map(\.name)), ["Alice", "Bob"])
+        XCTAssertEqual(memory.identities(for: analysis(), roster: nil)["system_1"]?.name, "Alice")
+        XCTAssertEqual(memory.identities(for: analysis(1), roster: nil)["system_1"]?.name, "Bob")
+    }
+
+    func testCompetingNamesWithinEachWindowNeverEnroll() {
+        var input = analysis(name: "Alice")
+        input.named_spans += input.named_spans.map {
+            .init(start: $0.start + 1, end: $0.end - 1, identity: .init(name: "Bob", source: "meeting_tile", evidence_count: 20))
+        }
+        var memory = VoiceMemory()
+        XCTAssertEqual(memory.learn(input, recording: "overlap"), 0)
+    }
+
+    func testRecordedMixedClusterCanEnrollVerifiedWindows() throws {
+        guard let path = ProcessInfo.processInfo.environment["QUILL_TEST_MIXED_VOICE_ANALYSIS"] else {
+            throw XCTSkip("Set QUILL_TEST_MIXED_VOICE_ANALYSIS for the recorded mixed-cluster enrollment regression")
+        }
+        let analysis = try JSONDecoder().decode(SpeakerAnalysis.self, from: Data(contentsOf: URL(fileURLWithPath: path)))
+        XCTAssertTrue(analysis.voice_identities?.isEmpty == true)
+        var memory = VoiceMemory()
+        XCTAssertGreaterThan(memory.learn(analysis, recording: "isolated-test-recording"), 0)
+        print("Verified sample enrollment from mixed clusters: \(memory.profiles.map(\.name))")
+        XCTAssertTrue(memory.profiles.allSatisfy { profile in
+            analysis.named_spans.contains { $0.identity.name == profile.name && $0.identity.source == "meeting_tile" }
+        })
+    }
+
     func testStorePersistsPrivatelyAndPreservesCorruptData() throws {
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: dir) }

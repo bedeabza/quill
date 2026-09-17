@@ -189,6 +189,9 @@ name through missing tile samples when that recording's acoustic voice has at
 least 10 seconds of consistent UI evidence across multiple turns, sufficient
 coverage, and no sustained competing name. Split acoustic clusters may share
 the same verified name. Caption text alone never establishes a voice identity.
+A mixed acoustic cluster stays unnamed as a whole, but clean windows inside it
+can still train a fingerprint when their speaking-tile evidence identifies one
+person and the independent voice samples agree.
 Conflicting evidence and ambiguous overlapping voices remain unresolved.
 Short replies can use a bounded edge of a sustained speaking indicator to
 account for UI delay. Words with uncertain evidence keep an anonymous label.
