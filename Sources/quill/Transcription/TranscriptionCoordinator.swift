@@ -114,7 +114,7 @@ actor TranscriptionCoordinator {
     }
 
     func transcribe(_ dir: URL, detectSpeakers: Bool = Config.speakerDetection(), remoteSpeakerCount: Int? = nil,
-                    engineOverride: TranscriptionEngineKind? = nil, offline: Bool = false) async throws {
+                    engineOverride: TranscriptionEngineKind? = nil, offline: Bool = false, learnVoiceMemory: Bool = true) async throws {
         let meta = try SessionMeta.read(from: dir)
         // Snapshot the selection for both tracks. Menu changes affect the next job.
         let engine = try await preparedEngine(kind: engineOverride, offline: offline)
@@ -158,13 +158,25 @@ actor TranscriptionCoordinator {
                 do {
                     log(dir, "separating speakers in \(track.file)")
                     var trackAnalysis = try await SpeakerDiarizer.analyze(audio, source: track.source,
-                                                                         speakerCount: track.source == "system" ? remoteSpeakerCount : nil)
+                                                                         speakerCount: track.source == "system" ? remoteSpeakerCount : nil,
+                                                                         captureVoiceSamples: track.source == "system" && Config.voiceMemoryEnabled())
                     if let started = meta.audioStartedAt, track.source == "system" {
                         trackAnalysis.named_spans = SpeakerAttribution.nameSpans(turns: trackAnalysis.turns, observations: observations,
                                                                audioStartedAt: started + offset, segments: segments)
                         trackAnalysis.voice_identities = SpeakerAttribution.voiceNames(turns: trackAnalysis.turns, spans: trackAnalysis.named_spans)
                         for span in trackAnalysis.named_spans {
                             trackAnalysis.names[SpeakerAttribution.namedSpeakerID(span.identity, source: track.source)] = span.identity
+                        }
+                    }
+                    if track.source == "system", Config.voiceMemoryEnabled() {
+                        do {
+                            let recordingKey = try ElevenLabsEngine.fingerprint(audio)
+                            try VoiceMemoryStore.shared.apply(to: &trackAnalysis, recording: recordingKey, roster: roster, learn: learnVoiceMemory)
+                        } catch { log(dir, "speaker fingerprint memory unavailable: \(error); using current meeting evidence") }
+                    }
+                    if let samples = trackAnalysis.voice_samples {
+                        analysis.voice_samples = (analysis.voice_samples ?? []) + samples.map {
+                            VoiceSample(speaker_id: $0.speaker_id, start: $0.start + offset, end: $0.end + offset, embedding: $0.embedding)
                         }
                     }
                     merged += SpeakerAttribution.align(segments, turns: trackAnalysis.turns, source: track.source,

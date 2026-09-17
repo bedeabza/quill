@@ -54,13 +54,13 @@ struct Transcribe: ParsableCommand {
             }
         }
         try await TranscriptionCoordinator().transcribe(dir, detectSpeakers: !noSpeakers, remoteSpeakerCount: remoteSpeakers,
-                                                        engineOverride: engine, offline: offline)
+                                                        engineOverride: engine, offline: offline, learnVoiceMemory: output == nil)
         print(dir.appendingPathComponent("transcript.md").path)
     }
 }
 
 struct Speakers: ParsableCommand {
-    static let configuration = CommandConfiguration(abstract: "Inspect and correct speaker labels.", subcommands: [LabelSpeaker.self, RefreshSpeakers.self])
+    static let configuration = CommandConfiguration(abstract: "Inspect and correct speaker labels.", subcommands: [LabelSpeaker.self, RefreshSpeakers.self, SpeakerMemoryCommands.self])
 }
 
 struct LabelSpeaker: ParsableCommand {

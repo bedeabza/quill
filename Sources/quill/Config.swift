@@ -33,6 +33,19 @@ enum Config {
         } catch { return false }
     }
 
+    static func voiceMemoryEnabled() -> Bool { load()?["speaker_voice_memory"] as? Bool ?? true }
+
+    static func setVoiceMemoryEnabled(_ enabled: Bool) throws {
+        let existing = load()
+        guard existing != nil || !FileManager.default.fileExists(atPath: path.path) else {
+            throw TranscriptionFailure("Could not read Quill configuration.")
+        }
+        var config = existing ?? [:]
+        config["speaker_voice_memory"] = enabled
+        try FileManager.default.createDirectory(at: path.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try JSONSerialization.data(withJSONObject: config, options: [.prettyPrinted, .sortedKeys]).write(to: path, options: .atomic)
+    }
+
     static func speakerDetection() -> Bool { load()?["speaker_detection"] as? Bool ?? true }
     static func zoomVisualSpeakerDetection() -> Bool { load()?["zoom_visual_speaker_detection"] as? Bool ?? true }
     static func zoomLocalSpeakerName() -> String? {

@@ -181,7 +181,7 @@ receive stable IDs within that transcript and readable labels such as
 For Google Meet, Quill reads each visible speaker tile's name and speaking
 indicator through macOS Accessibility. It caches the tile controls during its
 regular meeting scan, then reads their state four times per second while
-recording. This works independently of the spoken language and does not
+a meeting is present, independently of recording. This works independently of the spoken language and does not
 require Meet captions, saved transcripts, or a browser extension.
 
 Recorded speaking tiles provide direct name evidence. Quill can also retain a
@@ -229,6 +229,7 @@ Optional configuration in `~/.config/quill/config.json`:
 ```json
 {
   "speaker_detection": true,
+  "speaker_voice_memory": true,
   "auto_meeting_captions": false,
   "local_speaker_name": "Your name",
   "zoom_visual_speaker_detection": true,
@@ -277,9 +278,45 @@ because forcing a count can merge voices. In-place refresh keeps exact backups
 and rejects edited wording or manual speaker corrections. The microphone
 segments stay unchanged, and remote word timestamps come from the original
 cache. Run your archive sync afterward to publish the repair.
-Voice recognition across meetings is deferred: the independent-utterance
-experiment did not reliably match the same voices, so this release stores no
-persistent voice profiles.
+Speaker tracking belongs to the running app. Fresh participant membership is
+available when a recording starts, and a Meet room change inside the same tab
+retains the recording while clearing old tile references and refreshing the
+roster. Idle discovery collects UI metadata only, not microphone/system audio.
+Turning meeting detection off also stops this discovery.
+
+Quill can remember verified remote voices locally for later recordings. It
+learns from sustained speaking-tile evidence or an explicit sole-speaker
+confirmation. It averages independent, non-overlapping speech samples into
+voice fingerprints; captions and predicted names cannot train the store.
+Recognition requires at least nine clean speech windows, agreement across
+multiple pooled samples, a strong similarity and runner-up margin, and no
+conflicting current speaker or participant evidence. Uncertain voices remain
+unnamed. Matches appear as `voice_fingerprint` in transcript attribution.
+
+Fingerprints are stored in a private directory at
+`~/Library/Application Support/Quill/SpeakerMemory/profiles.json`, with model
+versioning and source-audio hashes to prevent duplicate enrollment and matching
+a recording against itself. Audio is not uploaded for fingerprinting. Each
+person retains at most 24 prototypes. Matching runs during post-call speaker
+analysis; this does not add live audio recording outside calls.
+
+Use **Remember speaker voices** in the menu, or manage memory with:
+
+```sh
+quill speakers memory status
+quill speakers memory status --enabled false
+quill speakers memory status --enabled true
+quill speakers memory learn /path/to/recording
+quill speakers memory learn /path/to/recording --sole-remote-speaker "Alice"
+quill speakers memory forget "Alice"
+```
+
+The `learn` command reads local audio and verified UI evidence without changing
+existing transcripts. It skips recordings without enough reliable samples.
+Transcription previews can use saved fingerprints but never enroll new ones.
+Disabling memory preserves the store and stops automatic learning/matching.
+Forgetting a person removes their saved fingerprints; it does not rewrite
+previous transcripts.
 
 `speaker-observations.jsonl` contains captured caption/activity evidence;
 `speaker-analysis.json` stores turns and name evidence. Transcript schema

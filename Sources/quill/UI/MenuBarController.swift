@@ -14,6 +14,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     private let permissionItem = NSMenuItem(title: "Allow meeting detection...", action: #selector(permissionClicked), keyEquivalent: "")
     private var postProcessingItems: [NSMenuItem] = []
     private var engineItems: [NSMenuItem] = []
+    private let voiceMemoryItem = NSMenuItem(title: "Remember speaker voices", action: #selector(voiceMemoryClicked), keyEquivalent: "")
     private let apiKeyItem = NSMenuItem(title: "ElevenLabs API key...", action: #selector(apiKeyClicked), keyEquivalent: "")
     private let removeKeyItem = NSMenuItem(title: "Remove ElevenLabs API key", action: #selector(removeKeyClicked), keyEquivalent: "")
     private let keepItem = NSMenuItem(title: "Keep recording after meeting ends", action: #selector(keepClicked), keyEquivalent: "")
@@ -56,6 +57,9 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         menu.addItem(detectionLabel)
         menu.addItem(detectionToggle)
         menu.addItem(permissionItem)
+        voiceMemoryItem.target = self
+        voiceMemoryItem.toolTip = "Learn verified speaker voices locally and recognize them in later recordings."
+        menu.addItem(voiceMemoryItem)
 
         let engine = NSMenuItem(title: "Transcription engine", action: nil, keyEquivalent: "")
         let engineMenu = NSMenu()
@@ -144,7 +148,13 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         permissionItem.title = text.contains("Screen Recording") ? "Allow Zoom speaker names..." : "Allow meeting detection..."
     }
 
+    @objc private func voiceMemoryClicked() {
+        do { try Config.setVoiceMemoryEnabled(!Config.voiceMemoryEnabled()) }
+        catch { notifyUser(title: "Quill speaker memory", body: "Could not save the speaker memory setting: \(error)") }
+    }
+
     func menuWillOpen(_ menu: NSMenu) {
+        voiceMemoryItem.state = Config.voiceMemoryEnabled() ? .on : .off
         let hasKey = ElevenLabsKeychain.shared.containsKey()
         apiKeyItem.title = hasKey ? "Change ElevenLabs API key..." : "Set ElevenLabs API key..."
         removeKeyItem.isHidden = !hasKey

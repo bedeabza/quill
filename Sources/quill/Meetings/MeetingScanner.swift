@@ -304,14 +304,24 @@ actor MeetingScanner {
                     let code = MeetingEvidence.service(url: node.url) == "Slack" ? nil
                         : MeetingEvidence.meetCode(in: node.url) ?? MeetingEvidence.meetCode(in: node.text)
                     if ended && !node.isTab && MeetingEvidence.service(url: node.url) != "Slack" { continue }
-                    let matchingTab = node.isTab ? node.element : window.browserTabs.first(where: {
-                        $0.isTab && (code != nil ? MeetingEvidence.meetCode(in: $0.text) == code : $0.selected)
-                    })?.element
-                    let existing = known.values.first { entry in
-                        entry.pid == app.pid && (code != nil ? entry.code == code
-                            : matchingTab.map { tab in entry.tab.map { CFEqual($0, tab) } == true } == true
-                                || (!node.isTab && entry.document.map { CFEqual($0, node.element) } == true))
+                    let matchingTab: AXUIElement?
+                    if node.isTab { matchingTab = node.element }
+                    else if window.browserDocuments.count == 1 {
+                        matchingTab = window.browserTabs.first(where: \.selected)?.element
+                    } else {
+                        let matches = window.browserTabs.filter { code != nil && MeetingEvidence.meetCode(in: $0.text) == code }
+                        matchingTab = matches.count == 1 ? matches[0].element : nil
                     }
+                    let candidates = known.values.filter { $0.pid == app.pid && CFEqual($0.window, window.element) }
+                    let existingID = BrowserRoomBinding.existingID(candidates.map { entry in
+                        .init(id: entry.meeting.id, code: entry.code,
+                              sameTab: matchingTab.map { tab in entry.tab.map { CFEqual($0, tab) } == true } == true,
+                              sameDocument: !node.isTab && entry.document.map { CFEqual($0, node.element) } == true)
+                    }, code: code, hasTab: matchingTab != nil)
+                    let existing = existingID.flatMap { known[$0] }
+                    // A reused web area can navigate away from a call. Do not
+                    // adopt an unrelated page using the old meeting's service.
+                    if !node.isTab, node.url.hasPrefix("http"), MeetingEvidence.service(url: node.url) == nil { continue }
                     guard let service = MeetingEvidence.service(url: node.url) ?? existing?.meeting.service,
                           service == "Slack" || code != nil || leave || existing != nil else { continue }
                     if existing?.meeting.service == "Slack", service != "Slack" { continue }
@@ -326,10 +336,22 @@ actor MeetingScanner {
                     }
                     let id = existing?.meeting.id ?? nextID(pid: app.pid)
                     let tab = matchingTab ?? existing?.tab
+                    let roomChanged = !node.isTab && existing != nil
+                        && (existing?.meeting.service != service || (code != nil && existing?.code != code))
+                    if roomChanged {
+                        invalidateSpeakerTiles(id)
+                        speakerRefresh.removeValue(forKey: id)
+                        captionRequests.remove(id)
+                        endState.forget(id)
+                        // Close the old room's membership interval immediately.
+                        result.rosters.append(SpeakerObservation(observed_at: Date().timeIntervalSince1970,
+                            meeting_id: id, names: [], source: "meeting_roster", participants: [], roster_complete: false))
+                        FileHandle.standardError.write(Data("meeting detection: Room changed; refreshing participants\n".utf8))
+                    }
                     known[id] = Known(meeting: DetectedMeeting(id: id, app: app.name, service: service),
                                       pid: app.pid, window: window.element, tab: tab,
                                       document: node.isTab ? existing?.document : node.element,
-                                      code: service == "Slack" ? nil : code, isBrowser: true)
+                                      code: service == "Slack" ? nil : (node.isTab ? existing?.code ?? code : code), isBrowser: true)
                 }
             }
 
@@ -489,7 +511,11 @@ actor MeetingScanner {
                     }
                     continue
                 }
-                if endState.isEnded(entry.meeting.id, endScreen: documentPresent && ended && !leave, inCall: documentPresent && leave) {
+                let navigatedAway = window.browserDocuments.contains { node in
+                    entry.document.map { CFEqual($0, node.element) } == true
+                        && node.url.hasPrefix("http") && MeetingEvidence.service(url: node.url) == nil
+                }
+                if endState.isEnded(entry.meeting.id, endScreen: navigatedAway || (documentPresent && ended && !leave), inCall: !navigatedAway && documentPresent && leave) {
                     result.observations[entry.meeting.id] = .ended
                 } else if tabPresent || documentPresent {
                     result.observations[entry.meeting.id] = .present(entry.meeting)
