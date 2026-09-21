@@ -5,6 +5,7 @@ import AppKit
 /// (since we run as `.accessory` — no dock icon, no main window).
 @MainActor
 final class MenuBarController: NSObject, NSMenuDelegate {
+    private let keychain: ElevenLabsKeychain
     private let statusItem: NSStatusItem
     private let stateLabel: NSMenuItem
     private let transcriptionLabel: NSMenuItem
@@ -19,6 +20,9 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     private let removeKeyItem = NSMenuItem(title: "Remove ElevenLabs API key", action: #selector(removeKeyClicked), keyEquivalent: "")
     private let keepItem = NSMenuItem(title: "Keep recording after meeting ends", action: #selector(keepClicked), keyEquivalent: "")
 
+    private var credentialOperationInProgress = false
+    private var keyStatusTask: Task<Void, Never>?
+
     var onToggle: (() -> Void)?
     var onOpenFolder: (() -> Void)?
     var onQuit: (() -> Void)?
@@ -26,7 +30,8 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     var onPermission: (() -> Void)?
     var onKeepRecording: (() -> Void)?
 
-    override init() {
+    init(keychain: ElevenLabsKeychain = .shared) {
+        self.keychain = keychain
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
 
         let menu = NSMenu()
@@ -155,9 +160,18 @@ final class MenuBarController: NSObject, NSMenuDelegate {
 
     func menuWillOpen(_ menu: NSMenu) {
         voiceMemoryItem.state = Config.voiceMemoryEnabled() ? .on : .off
-        let hasKey = ElevenLabsKeychain.shared.containsKey()
-        apiKeyItem.title = hasKey ? "Change ElevenLabs API key..." : "Set ElevenLabs API key..."
-        removeKeyItem.isHidden = !hasKey
+        // Returning immediately keeps AppKit responsive if SecurityAgent is
+        // waiting for approval on another credential operation.
+        if keyStatusTask == nil, !credentialOperationInProgress {
+            keyStatusTask = Task { [weak self, keychain] in
+                let hasKey = await Task.detached { [keychain] in keychain.containsKey() }.value
+                guard let self else { return }
+                self.keyStatusTask = nil
+                guard !self.credentialOperationInProgress else { return }
+                self.apiKeyItem.title = hasKey ? "Change ElevenLabs API key..." : "Set ElevenLabs API key..."
+                self.removeKeyItem.isHidden = !hasKey
+            }
+        }
         for item in engineItems {
             item.state = TranscriptionEngineKind.allCases[item.tag].rawValue == Config.transcriptionEngine() ? .on : .off
         }
@@ -168,19 +182,34 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     }
 
     @objc private func engineClicked(_ sender: NSMenuItem) {
-        let kind = TranscriptionEngineKind.allCases[sender.tag]
-        if kind == .elevenLabs && !ElevenLabsKeychain.shared.containsKey(), !enterAPIKey() { return }
-        guard Config.setTranscriptionEngine(kind) else {
-            notifyUser(title: "Quill settings", body: "Could not save the transcription engine setting.")
-            return
+        guard !credentialOperationInProgress else { return }
+        credentialOperationInProgress = true
+        Task {
+            defer { credentialOperationInProgress = false }
+            let kind = TranscriptionEngineKind.allCases[sender.tag]
+            if kind == .elevenLabs {
+                let hasKey = await Task.detached { [keychain] in keychain.containsKey() }.value
+                if !hasKey, !(await enterAPIKey()) { return }
+            }
+            guard Config.setTranscriptionEngine(kind) else {
+                notifyUser(title: "Quill settings", body: "Could not save the transcription engine setting.")
+                return
+            }
+            for item in engineItems { item.state = item === sender ? .on : .off }
+            notifyUser(title: "Quill transcription", body: "\(kind.title) will be used for the next transcription.")
         }
-        for item in engineItems { item.state = item === sender ? .on : .off }
-        notifyUser(title: "Quill transcription", body: "\(kind.title) will be used for the next transcription.")
     }
 
-    @objc private func apiKeyClicked() { _ = enterAPIKey() }
+    @objc private func apiKeyClicked() {
+        guard !credentialOperationInProgress else { return }
+        credentialOperationInProgress = true
+        Task {
+            defer { credentialOperationInProgress = false }
+            _ = await enterAPIKey()
+        }
+    }
 
-    @discardableResult private func enterAPIKey() -> Bool {
+    @discardableResult private func enterAPIKey() async -> Bool {
         NSApp.activate(ignoringOtherApps: true)
         let alert = NSAlert()
         alert.messageText = "ElevenLabs API key"
@@ -195,11 +224,14 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         alert.window.initialFirstResponder = field
         defer { field.stringValue = "" }
         guard alert.runModal() == .alertFirstButtonReturn else { return false }
+        let value = field.stringValue
+        field.stringValue = ""
         do {
-            try ElevenLabsKeychain.shared.save(field.stringValue)
+            try await Task.detached { [keychain] in try keychain.save(value) }.value
             notifyUser(title: "Quill settings", body: "ElevenLabs API key saved in macOS Keychain.")
             return true
         } catch {
+            NSApp.activate(ignoringOtherApps: true)
             let failure = NSAlert()
             failure.messageText = "Could not save the API key"
             failure.informativeText = String(describing: error)
@@ -209,11 +241,16 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     }
 
     @objc private func removeKeyClicked() {
-        do {
-            try ElevenLabsKeychain.shared.remove()
-            notifyUser(title: "Quill settings", body: "ElevenLabs API key removed. Select Parakeet or save another key to resume transcription.")
-        } catch {
-            notifyUser(title: "Quill settings", body: String(describing: error))
+        guard !credentialOperationInProgress else { return }
+        credentialOperationInProgress = true
+        Task {
+            defer { credentialOperationInProgress = false }
+            do {
+                try await Task.detached { [keychain] in try keychain.remove() }.value
+                notifyUser(title: "Quill settings", body: "ElevenLabs API key removed. Select Parakeet or save another key to resume transcription.")
+            } catch {
+                notifyUser(title: "Quill settings", body: String(describing: error))
+            }
         }
     }
 

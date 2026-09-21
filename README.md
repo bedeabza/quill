@@ -27,6 +27,17 @@ swift build -c release
 python3 tools/package-app.py
 ```
 
+For builds that retain their Keychain identity across updates, use the same
+code-signing certificate each time:
+
+```sh
+python3 tools/package-app.py --signing-identity "Developer ID Application: Your Name (TEAMID)"
+```
+
+`QUILL_SIGNING_IDENTITY` sets the same option for repeated builds. The default
+is ad hoc signing, whose identity changes when the executable changes. macOS
+can ask for Keychain approval again after installing such an update.
+
 Move `.build/Quill.app` to `~/Applications` using Finder. Quit an older copy
 before replacing it. Quill keeps recordings and configuration outside the app,
 so replacing the app preserves both.
@@ -373,6 +384,13 @@ Set or change your ElevenLabs key from **Quill menu > ElevenLabs API key...**.
 The entry field shows the key so you can check it before saving. The key is stored encrypted in **macOS Keychain**,
 separately from configuration, recordings, and the app bundle. The app reads it
 only when transcription needs it; it is never written to logs or JSON config.
+Quill keeps an authorized key in memory while running, so preparation, audio
+tracks, and later meetings reuse it. Metadata checks detect replacement or
+removal from the menu or CLI and invalidate that cache. Keychain operations
+run off the menu's UI thread; opening the menu never requests authentication.
+If macOS asks for access, choose **Always Allow** to remember approval for
+this signed build. An uncached read still requires an unlocked login Keychain;
+an ad hoc app update can require approval again.
 The key is not synchronized through iCloud. The menu also supports removing it.
 Quill uses the login Keychain's normal macOS access control.
 

@@ -136,7 +136,7 @@ struct Run: ParsableCommand {
 
         // Non-blocking: permissions prompt on first recording, so warnings at
         // startup are informational, not fatal.
-        let checks = DoctorReport.run(recordingsRoot: root)
+        let checks = DoctorReport.run(recordingsRoot: root, checkKeychain: false)
         if !DoctorReport.allOK(checks) {
             FileHandle.standardError.write(Data("startup checks failed:\n".utf8))
             DoctorReport.print(checks)

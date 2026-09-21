@@ -14,6 +14,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--binary", type=Path, default=repo / ".build/release/quill")
     parser.add_argument("--output", type=Path, default=repo / ".build/Quill.app")
+    parser.add_argument("--signing-identity", default=os.environ.get("QUILL_SIGNING_IDENTITY", "-"),
+                        help="Code-signing identity name or SHA-1; defaults to ad hoc. Reuse a certificate to retain Keychain trust across updates.")
     args = parser.parse_args()
     if not args.binary.is_file():
         parser.error("Build Quill first: swift build -c release")
@@ -34,7 +36,7 @@ def main():
         icons = Path(staging) / "AppIcon.iconset"
         subprocess.run(["xcrun", "swift", str(repo / "tools/make-icon.swift"), str(icons)], check=True)
         subprocess.run(["iconutil", "-c", "icns", str(icons), "-o", str(resources / "AppIcon.icns")], check=True)
-        subprocess.run(["codesign", "--force", "--sign", "-", str(app)], check=True)
+        subprocess.run(["codesign", "--force", "--sign", args.signing_identity, str(app)], check=True)
         subprocess.run(["codesign", "--verify", "--strict", str(app)], check=True)
         previous = Path(staging) / "previous.app"
         if args.output.exists():
