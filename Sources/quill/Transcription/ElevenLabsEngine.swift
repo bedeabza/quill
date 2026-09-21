@@ -4,6 +4,7 @@ import Foundation
 
 /// Cloud transcription through Scribe v2, preserving original track clocks.
 actor ElevenLabsEngine: TranscriptionEngine {
+    private static let requestTimeout: TimeInterval = 300
     nonisolated let name = TranscriptionEngineKind.elevenLabs.rawValue
     nonisolated let model = "scribe_v2"
     private let offline: Bool
@@ -19,7 +20,7 @@ actor ElevenLabsEngine: TranscriptionEngine {
         configuration.urlCache = nil
         configuration.httpCookieStorage = nil
         configuration.httpShouldSetCookies = false
-        configuration.timeoutIntervalForRequest = 120
+        configuration.timeoutIntervalForRequest = Self.requestTimeout
         configuration.timeoutIntervalForResource = 1800
         self.session = session ?? URLSession(configuration: configuration, delegate: NoRedirects(), delegateQueue: nil)
     }
@@ -106,6 +107,7 @@ actor ElevenLabsEngine: TranscriptionEngine {
         let key = try ElevenLabsKeychain.validated(key)
         var request = URLRequest(url: URL(string: "https://api.elevenlabs.io/v1/speech-to-text")!)
         request.httpMethod = "POST"
+        request.timeoutInterval = Self.requestTimeout
         request.setValue(key, forHTTPHeaderField: "xi-api-key")
         request.setValue("OpenAl File Downloader, XaiImageApiFetch/1.0°", forHTTPHeaderField: "User-Agent")
         request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")

@@ -378,6 +378,7 @@ Quill uses the login Keychain's normal macOS access control.
 
 ElevenLabs uses `scribe_v2`, automatic language detection, and word timestamps.
 It uploads each track separately after converting it to 16 kHz mono WAV.
+Transcription requests use a five-minute timeout.
 Speaker separation and name attribution then run locally, followed by the
 selected transcript cleanup mode and finally the archive hook. Standard
 ElevenLabs account billing and request retention settings apply.
