@@ -39,7 +39,7 @@ enum MeetingEvidence {
 
     static func service(url: String) -> String? {
         guard let parsed = URL(string: url), let host = parsed.host?.lowercased() else { return nil }
-        if host == "meet.google.com", parsed.path.range(of: "^/[a-z]{3}-[a-z]{4}-[a-z]{3}/?$", options: .regularExpression) != nil { return "Google Meet" }
+        if host == "meet.google.com", parsed.path.range(of: "^/(?:meet/)?[a-z]{3}-[a-z]{4}-[a-z]{3}/?$", options: .regularExpression) != nil { return "Google Meet" }
         if host == "teams.microsoft.com" || host == "teams.live.com" || host == "teams.cloud.microsoft" { return "Microsoft Teams" }
         if host == "zoom.us" || host.hasSuffix(".zoom.us") { return "Zoom" }
         if ["https", "http"].contains(parsed.scheme?.lowercased() ?? ""),

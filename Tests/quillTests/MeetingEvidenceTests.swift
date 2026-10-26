@@ -19,6 +19,18 @@ final class MeetingEvidenceTests: XCTestCase {
         XCTAssertEqual(MeetingEvidence.service(url: "https://teams.cloud.microsoft/v2/"), "Microsoft Teams")
     }
 
+    func testMeetPrefixedRoomURLs() {
+        for path in ["meet/abc-defg-hij", "meet/abc-defg-hij/", "meet/abc-defg-hij?authuser=1"] {
+            let url = "https://meet.google.com/" + path
+            XCTAssertEqual(MeetingEvidence.service(url: url), "Google Meet")
+            XCTAssertEqual(MeetingEvidence.meetCode(in: url), "abc-defg-hij")
+        }
+        for path in ["meet/", "meet/invalid", "meet/abc-defg-hij/extra", "other/abc-defg-hij"] {
+            XCTAssertNil(MeetingEvidence.service(url: "https://meet.google.com/" + path))
+        }
+        XCTAssertNil(MeetingEvidence.service(url: "https://meet.google.com.evil.test/meet/abc-defg-hij"))
+    }
+
     func testBackgroundMeetTabKeepsItsMeetingIdentity() {
         XCTAssertEqual(MeetingEvidence.meetCode(in: "Meet - abc-defg-hij"), "abc-defg-hij")
         XCTAssertEqual(MeetingEvidence.meetCode(in: "https://meet.google.com/abc-defg-hij?authuser=1"), "abc-defg-hij")
