@@ -2,7 +2,7 @@ import AVFoundation
 import XCTest
 @testable import quill
 
-private let scribeFixture = Data(#"{"language_code":"ron","language_probability":0.99,"text":"Bună dimineața! Mâine discutăm bugetul.","words":[{"text":"Bună","start":0.25,"end":0.5,"type":"word"},{"text":" ","start":0.5,"end":0.5,"type":"spacing"},{"text":"dimineața!","start":0.5,"end":0.95,"type":"word"},{"text":"Mâine","start":1.2,"end":1.6,"type":"word"},{"text":"discutăm","start":2.9,"end":3.3,"type":"word"},{"text":"bugetul.","start":3.3,"end":3.9,"type":"word"}]}"#.utf8)
+private let scribeFixture = Data(#"{"language_code":"ron","language_probability":0.99,"text":"Bună dimineața! Mâine discutăm bugetul.","words":[{"text":"Bună","start":0.25,"end":0.5,"type":"word","speaker_id":"speaker_0"},{"text":" ","start":0.5,"end":0.5,"type":"spacing"},{"text":"dimineața!","start":0.5,"end":0.95,"type":"word","speaker_id":"speaker_0"},{"text":"Mâine","start":1.2,"end":1.6,"type":"word","speaker_id":"speaker_0"},{"text":"discutăm","start":2.9,"end":3.3,"type":"word","speaker_id":"speaker_0"},{"text":"bugetul.","start":3.3,"end":3.9,"type":"word","speaker_id":"speaker_0"}]}"#.utf8)
 
 private final class MockScribeState: @unchecked Sendable {
     let lock = NSLock()
@@ -55,6 +55,7 @@ final class ElevenLabsEngineTests: XCTestCase, @unchecked Sendable {
         XCTAssertEqual(segments.map(\.text), ["Bună dimineața!", "Mâine", "discutăm bugetul."])
         XCTAssertEqual(segments[0].start, 0.25)
         XCTAssertEqual(segments[0].end, 0.95)
+        XCTAssertEqual(segments.map(\.speakerID), ["speaker_0", "speaker_0", "speaker_0"])
         XCTAssertEqual(segments.flatMap(\.words).map(\.text), ["Bună", "dimineața!", "Mâine", "discutăm", "bugetul."])
     }
 
@@ -68,6 +69,17 @@ final class ElevenLabsEngineTests: XCTestCase, @unchecked Sendable {
                 words: [.init(text: "bad", start: start, end: end, type: "word")])
             XCTAssertThrowsError(try ElevenLabsEngine.segments(bad))
         }
+    }
+
+    func testProviderSpeakerChangesSplitSentencesAndNullIDsStayUnknown() throws {
+        let response = ElevenLabsEngine.Response(language_code: "eng", language_probability: 1, text: "One two three four", words: [
+            .init(text: "One", start: 0, end: 0.2, type: "word", speaker_id: "speaker_0"),
+            .init(text: "two", start: 0.2, end: 0.4, type: "word", speaker_id: "speaker_1"),
+            .init(text: "three", start: 0.4, end: 0.6, type: "word", speaker_id: "speaker_0"),
+            .init(text: "four", start: 0.6, end: 0.8, type: "word")])
+        let segments = try ElevenLabsEngine.segments(response)
+        XCTAssertEqual(segments.map(\.text), ["One", "two", "three", "four"])
+        XCTAssertEqual(segments.map(\.speakerID), ["speaker_0", "speaker_1", "speaker_0", nil])
     }
 
     func testOfflineFailsBeforeCredentialAccess() async {
@@ -92,7 +104,7 @@ final class ElevenLabsEngineTests: XCTestCase, @unchecked Sendable {
         let text = try String(contentsOf: body, encoding: .utf8)
         XCTAssertTrue(text.contains("name=\"model_id\"\r\n\r\nscribe_v2"))
         XCTAssertTrue(text.contains("name=\"timestamps_granularity\"\r\n\r\nword"))
-        XCTAssertTrue(text.contains("name=\"diarize\"\r\n\r\nfalse"))
+        XCTAssertTrue(text.contains("name=\"diarize\"\r\n\r\ntrue"))
         XCTAssertTrue(text.hasSuffix("wave fixture\r\n--fixture-boundary--\r\n"))
         XCTAssertFalse(text.contains("language_code"))
         XCTAssertFalse(text.contains("xi-api-key"))
@@ -149,9 +161,15 @@ final class ElevenLabsEngineTests: XCTestCase, @unchecked Sendable {
         XCTAssertEqual(MockScribeProtocol.state.requestCount(), 1)
         let cache = try String(contentsOf: work.appendingPathComponent("elevenlabs-mic.caf.json"), encoding: .utf8)
         XCTAssertFalse(cache.contains("test-secret"))
-        try writeAudio(0.1)
+        // The old cache did not ask Scribe for speakers and must be uploaded again.
+        let decoded = try JSONDecoder().decode(ElevenLabsEngine.Cache.self, from: Data(cache.utf8))
+        let old = ElevenLabsEngine.Cache(version: 1, model: decoded.model, audioSHA256: decoded.audioSHA256, response: decoded.response)
+        try JSONEncoder().encode(old).write(to: work.appendingPathComponent("elevenlabs-mic.caf.json"))
         _ = try await engine.transcribe(audio)
         XCTAssertEqual(MockScribeProtocol.state.requestCount(), 2)
+        try writeAudio(0.1)
+        _ = try await engine.transcribe(audio)
+        XCTAssertEqual(MockScribeProtocol.state.requestCount(), 3)
         await engine.release()
     }
 }

@@ -16,6 +16,15 @@ final class RecordingSession {
     private var roster: ParticipantRoster?
     private var lastRosterObservation = -Double.infinity
     private var lastRosterWrite = -Double.infinity
+    private var meetingTitle: String?
+    private var meetingID: String?
+
+    func recordMeeting(_ meeting: DetectedMeeting) {
+        let key = meeting.id + "/" + (meeting.roomCode ?? "")
+        if meetingID != key { meetingTitle = nil }
+        meetingID = key
+        if let title = meeting.title { meetingTitle = title }
+    }
 
     func recordSpeakers(_ observation: SpeakerObservation) {
         guard observation.observed_at >= startedAt.timeIntervalSince1970 else { return }
@@ -120,6 +129,7 @@ final class RecordingSession {
             ],
         ]
         if let localSpeakerName, !sharedMicrophone { meta["local_speaker_name"] = localSpeakerName }
+        if let meetingTitle { meta["meeting_title"] = meetingTitle }
         if let data = try? JSONSerialization.data(
             withJSONObject: meta,
             options: [.prettyPrinted, .sortedKeys]

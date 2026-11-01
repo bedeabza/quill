@@ -217,6 +217,7 @@ final class AppController: NSObject, NSApplicationDelegate {
         meetings.onStop = { [weak self] in self?.stopSession() }
         meetings.onStatus = { [weak self] text, enabled in self?.menuBar.updateDetection(text, enabled: enabled) }
         meetings.onSpeakers = { [weak self] observation in self?.session?.recordSpeakers(observation) }
+        meetings.onMeeting = { [weak self] meeting in self?.session?.recordMeeting(meeting) }
         meetings.start()
 
         Task { [transcription, root] in

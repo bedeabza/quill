@@ -108,7 +108,9 @@ actor MeetingScanner {
     /// rather than walking every browser window four times per second.
     func speakerActivity(for meetingID: String) async -> SpeakerObservation? {
         guard AXIsProcessTrusted(), let entry = known[meetingID], !bool(speakerWindow(entry), kAXMinimizedAttribute) else { return nil }
-        if let tab = entry.tab, !bool(tab, kAXValueAttribute) && !bool(tab, kAXSelectedAttribute) {
+        let tabValue = entry.tab.map { bool($0, kAXValueAttribute) } ?? true
+        let tabSelected = entry.tab.map { bool($0, kAXSelectedAttribute) } ?? true
+        if !tabValue && !tabSelected {
             // Speaking indicators in a hidden tab may be stale. Keep discovering
             // membership from the established document through the slower poll.
             return nil
@@ -204,6 +206,7 @@ actor MeetingScanner {
         let now = ProcessInfo.processInfo.systemUptime
         let deadline = now + 0.04
         var refresh = speakerRefresh[id] ?? SpeakerTreeRefresh<AXUIElement>()
+        let isZoom = entry.meeting.service == "Zoom"
         let snapshot = refresh.step(root: root, now: now, hasTime: { ProcessInfo.processInfo.systemUptime < deadline }) { element, parent in
             let role = string(element, kAXRoleAttribute)
             guard !role.isEmpty, let descendants = children(element, attribute: kAXChildrenAttribute) else { return nil }
@@ -218,7 +221,7 @@ actor MeetingScanner {
             let node = SpeakerUINode(parent: parent, role: role, text: text,
                                      classes: Set(strings(element, "AXDOMClassList")),
                                      subrole: role == "AXGroup" ? string(element, kAXSubroleAttribute) : "",
-                                     roleDescription: entry.meeting.service == "Zoom" ? string(element, kAXRoleDescriptionAttribute).lowercased() : "")
+                                     roleDescription: isZoom ? string(element, kAXRoleDescriptionAttribute).lowercased() : "")
             return (node, descendants)
         }
         speakerRefresh[id] = refresh
@@ -292,7 +295,9 @@ actor MeetingScanner {
                     if leave && (service == "Slack" || !ended) {
                         let existing = known.values.first { $0.pid == app.pid && CFEqual($0.window, window.element) }
                         let id = existing?.meeting.id ?? nextID(pid: app.pid)
-                        known[id] = Known(meeting: DetectedMeeting(id: id, app: app.name, service: service),
+                        let title = MeetingEvidence.title(candidates: meetingTitleCandidates(window.nodes)
+                            + [string(window.element, kAXTitleAttribute)], service: service)
+                        known[id] = Known(meeting: DetectedMeeting(id: id, app: app.name, service: service, title: title),
                                           pid: app.pid, window: window.element, tab: nil, document: nil, code: nil, isBrowser: false)
                     }
                     continue
@@ -348,10 +353,20 @@ actor MeetingScanner {
                             meeting_id: id, names: [], source: "meeting_roster", participants: [], roster_complete: false))
                         FileHandle.standardError.write(Data("meeting detection: Room changed; refreshing participants\n".utf8))
                     }
-                    known[id] = Known(meeting: DetectedMeeting(id: id, app: app.name, service: service),
+                    // Read the established document/tab, never the foreground tab's window title.
+                    let document = node.isTab ? existing?.document : node.element
+                    let scopedNodes = document.flatMap { window.documents[$0]?.nodes } ?? []
+                    let title = MeetingEvidence.title(candidates:
+                        meetingTitleCandidates(scopedNodes) + [document.map { string($0, kAXTitleAttribute) } ?? "",
+                         tab.map { string($0, kAXTitleAttribute) } ?? "",
+                         tab.map { string($0, kAXDescriptionAttribute) } ?? "",
+                         document.map { string($0, kAXDescriptionAttribute) } ?? ""], service: service)
+                        ?? (roomChanged ? nil : existing?.meeting.title)
+                    let roomCode = service == "Slack" ? nil : (node.isTab ? existing?.code ?? code : code)
+                    known[id] = Known(meeting: DetectedMeeting(id: id, app: app.name, service: service, title: title, roomCode: roomCode),
                                       pid: app.pid, window: window.element, tab: tab,
-                                      document: node.isTab ? existing?.document : node.element,
-                                      code: service == "Slack" ? nil : (node.isTab ? existing?.code ?? code : code), isBrowser: true)
+                                      document: document,
+                                      code: roomCode, isBrowser: true)
                 }
             }
 
@@ -359,7 +374,8 @@ actor MeetingScanner {
                 guard let window = windows.first(where: { CFEqual($0.element, entry.window) }) else {
                     // A closed call window is a positive end signal. If another native
                     // call window appeared, keep recording through layout transitions.
-                    let anotherCall = app.service != nil && windows.contains { hasCallControls($0, service: app.service) }
+                    let hasOtherCallControls = windows.contains { hasCallControls($0, service: app.service) }
+                    let anotherCall = app.service != nil && hasOtherCallControls
                     result.observations[entry.meeting.id] = anotherCall ? .present(entry.meeting) : .ended
                     continue
                 }
@@ -373,7 +389,8 @@ actor MeetingScanner {
                         result.rosters.append(roster)
                     }
                 }
-                if captureSpeakers && !ended && !bool(entry.window, kAXMinimizedAttribute) {
+                let minimized = bool(entry.window, kAXMinimizedAttribute)
+                if captureSpeakers && !ended && !minimized {
                     // Browser windows may contain several calls. Read only the
                     // established meeting document, never names from another tab.
                     let nodes: [Node]
@@ -449,7 +466,8 @@ actor MeetingScanner {
                         if nodes.contains(where: { $0.text == "Captions" }) {
                             captionRequests.insert(entry.meeting.id)
                         }
-                        if enableCaptions && captionMeetingID == entry.meeting.id && !captionRequests.contains(entry.meeting.id),
+                        let captionsRequested = captionRequests.contains(entry.meeting.id)
+                        if enableCaptions && captionMeetingID == entry.meeting.id && !captionsRequested,
                            let button = nodes.first(where: { $0.role == kAXButtonRole && $0.text == "Turn on captions" }) {
                             // Once per call. Respect a later manual choice to
                             // switch captions off; diagnostics never press it.
@@ -503,8 +521,8 @@ actor MeetingScanner {
                         result.observations[entry.meeting.id] = .ended
                     } else if state == .joined || (!visible && (tabPresent || documentPresent)) {
                         result.observations[entry.meeting.id] = .present(entry.meeting)
-                    } else if !tabPresent && !documentPresent, let tab = entry.tab, window.complete,
-                              !window.browserTabs.isEmpty || isDestroyed(tab) {
+                    } else if !tabPresent && !documentPresent, entry.tab != nil, window.complete,
+                              tabIsGone(entry.tab, hasVisibleTabs: !window.browserTabs.isEmpty) {
                         result.observations[entry.meeting.id] = .ended
                     } else {
                         result.observations[entry.meeting.id] = .unknown
@@ -519,8 +537,8 @@ actor MeetingScanner {
                     result.observations[entry.meeting.id] = .ended
                 } else if tabPresent || documentPresent {
                     result.observations[entry.meeting.id] = .present(entry.meeting)
-                } else if let tab = entry.tab, window.complete,
-                          !window.browserTabs.isEmpty || isDestroyed(tab) {
+                } else if entry.tab != nil, window.complete,
+                          tabIsGone(entry.tab, hasVisibleTabs: !window.browserTabs.isEmpty) {
                     result.observations[entry.meeting.id] = .ended
                 } else {
                     result.observations[entry.meeting.id] = .unknown
@@ -567,6 +585,27 @@ actor MeetingScanner {
         return "\(pid):\(serial)"
     }
 
+    private func meetingTitleCandidates(_ nodes: [Node]) -> [String] {
+        var result: [String] = []
+        let deadline = ProcessInfo.processInfo.systemUptime + 0.03
+        var identifierReads = 0
+        for node in nodes {
+            let lower = node.text.lowercased()
+            if ["meeting title:", "meeting name:", "meeting topic:"].contains(where: { lower.hasPrefix($0) }) {
+                result.append(node.text)
+            } else if ["AXHeading", "AXTextField", "AXStaticText"].contains(node.role),
+                      identifierReads < 64, ProcessInfo.processInfo.systemUptime < deadline {
+                identifierReads += 1
+                let identifier = string(node.element, "AXIdentifier").lowercased()
+                    .filter { $0.isLetter || $0.isNumber }
+                if ["meetingtitle", "meetingname", "meetingtopic", "calltitle"].contains(identifier) {
+                    result.append(node.text)
+                }
+            }
+        }
+        return result
+    }
+
     private func readWindow(_ window: AXUIElement, browser: Bool) -> Window {
         var result = readTree(window, skipWebContent: browser)
         if browser {
@@ -600,13 +639,16 @@ actor MeetingScanner {
             let description = string(element, kAXDescriptionAttribute)
             let title = string(element, kAXTitleAttribute)
             let roleDescription = string(element, kAXRoleDescriptionAttribute).lowercased()
-            let isTab = role == "AXTab" || roleDescription == "tab" || string(element, kAXSubroleAttribute) == "AXTabButton"
+            let subrole = string(element, kAXSubroleAttribute)
+            let isTab = role == "AXTab" || roleDescription == "tab" || subrole == "AXTabButton"
             var text = [title, description].filter { !$0.isEmpty }.joined(separator: " ")
             if title == description { text = title }
             if role == kAXStaticTextRole { text = string(element, kAXValueAttribute) }
             let axURL = role == "AXWebArea" ? string(element, "AXURL") : ""
             let url = axURL.isEmpty && role == "AXWebArea" ? string(element, kAXDocumentAttribute) : axURL
-            let selected = isTab && (bool(element, kAXValueAttribute) || bool(element, kAXSelectedAttribute))
+            let tabValue = bool(element, kAXValueAttribute)
+            let tabSelected = bool(element, kAXSelectedAttribute)
+            let selected = isTab && (tabValue || tabSelected)
             let activeSpeaker = SpeakerEvidence.activeName(label: description, role: role)
                 ?? SpeakerEvidence.activeName(label: title, role: role)
             nodes.append(Node(element: element, role: role, text: text, url: url, isTab: isTab, selected: selected, activeSpeaker: activeSpeaker,
@@ -666,6 +708,12 @@ actor MeetingScanner {
     private func isDestroyed(_ element: AXUIElement) -> Bool {
         var value: CFTypeRef?
         return AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString, &value) == .invalidUIElement
+    }
+
+    private func tabIsGone(_ tab: AXUIElement?, hasVisibleTabs: Bool) -> Bool {
+        if hasVisibleTabs { return true }
+        guard let tab else { return false }
+        return isDestroyed(tab)
     }
 
     private func children(_ element: AXUIElement, attribute: String) -> [AXUIElement]? {

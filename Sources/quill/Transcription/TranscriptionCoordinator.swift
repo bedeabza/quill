@@ -116,6 +116,9 @@ actor TranscriptionCoordinator {
     func transcribe(_ dir: URL, detectSpeakers: Bool = Config.speakerDetection(), remoteSpeakerCount: Int? = nil,
                     engineOverride: TranscriptionEngineKind? = nil, offline: Bool = false, learnVoiceMemory: Bool = true) async throws {
         let meta = try SessionMeta.read(from: dir)
+        if (engineOverride?.rawValue ?? Config.transcriptionEngine()) == "elevenlabs", remoteSpeakerCount != nil {
+            throw TranscriptionFailure("--remote-speakers is only supported by local diarization. ElevenLabs infers speakers in Scribe.")
+        }
         // Snapshot the selection for both tracks. Menu changes affect the next job.
         let engine = try await preparedEngine(kind: engineOverride, offline: offline)
         let observationURL = dir.appendingPathComponent("speaker-observations.jsonl")
@@ -133,6 +136,7 @@ actor TranscriptionCoordinator {
         var analysis = SpeakerAnalysis(turns: [], names: [:])
         var speakerStatus: [String: String] = [:]
         var successfulTracks = 0
+        var cloudTracks: [ElevenLabsTranscripts.TrackResult] = []
         for track in meta.tracks {
             let audio = dir.appendingPathComponent(track.file)
             guard FileManager.default.fileExists(atPath: audio.path) else {
@@ -154,6 +158,10 @@ actor TranscriptionCoordinator {
                 continue
             }
             let offset = TimeInterval(track.offsetMs) / 1000
+            if engine.name == TranscriptionEngineKind.elevenLabs.rawValue {
+                cloudTracks.append(.init(track: track, segments: segments))
+                continue
+            }
             if detectSpeakers && (track.speaker == "them" || meta.sharedMicrophone) && !segments.isEmpty {
                 do {
                     log(dir, "separating speakers in \(track.file)")
@@ -211,6 +219,13 @@ actor TranscriptionCoordinator {
         guard successfulTracks > 0 else {
             throw TranscriptionFailure("No audio track could be transcribed. See transcribe.log; the session remains pending.")
         }
+        if engine.name == TranscriptionEngineKind.elevenLabs.rawValue {
+            let output = ElevenLabsTranscripts.build(meta: meta, tracks: cloudTracks, roster: roster,
+                                                    observations: detectSpeakers ? observations : [])
+            try output.write(to: dir)
+            log(dir, "ElevenLabs diarization; name mapping: \(output.report.accepted ? "accepted" : "below threshold or missing evidence")")
+            return
+        }
         merged.sort { $0.start_ms < $1.start_ms }
         merged = roster.relabel(merged)
 
@@ -221,11 +236,15 @@ actor TranscriptionCoordinator {
             segments: merged,
             schema_version: 2,
             speaker_detection: speakerStatus,
-            participant_roster: roster
+            participant_roster: roster,
+            meeting_title: meta.meetingTitle
         )
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         try encoder.encode(analysis).write(to: dir.appendingPathComponent("speaker-analysis.json"), options: .atomic)
+        try ElevenLabsTranscripts.removeNamedVariant(in: dir)
+        let mappingURL = dir.appendingPathComponent("speaker-mapping.json")
+        if FileManager.default.fileExists(atPath: mappingURL.path) { try FileManager.default.removeItem(at: mappingURL) }
         try transcript.write(to: dir)
         log(dir, "done — \(merged.count) segments")
     }
@@ -292,6 +311,7 @@ struct SessionMeta {
     let localSpeakerName: String?
     let sharedMicrophone: Bool
     var participantRoster: ParticipantRoster? = nil
+    var meetingTitle: String? = nil
 
     enum MetaError: Error, CustomStringConvertible {
         case unreadable(URL)
@@ -325,7 +345,8 @@ struct SessionMeta {
             .flatMap { try? JSONDecoder().decode(ParticipantRoster.self, from: $0) }
         return SessionMeta(tracks: tracks, audioStartedAt: json["audio_started_at"] as? Double,
                            localSpeakerName: SpeakerAttribution.cleanName(json["local_speaker_name"] as? String),
-                           sharedMicrophone: json["shared_microphone"] as? Bool ?? false, participantRoster: roster)
+                           sharedMicrophone: json["shared_microphone"] as? Bool ?? false, participantRoster: roster,
+                           meetingTitle: (json["meeting_title"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines))
     }
 }
 
@@ -340,11 +361,13 @@ struct Transcript: Codable, Sendable {
         var source: String? = nil
         var speaker_name: String? = nil
         var attribution: String? = nil
+        var provider_speaker_id: String? = nil
 
         var displayName: String {
             if let speaker_name { return speaker_name }
             if speaker.hasSuffix("_unknown") { return "Unknown speaker" }
             if let number = speaker.split(separator: "_").last, Int(number) != nil {
+                if attribution == "elevenlabs" { return "Speaker \(number)" }
                 return source == "mic" ? "Local speaker \(number)" : "Speaker \(number)"
             }
             return speaker
@@ -358,23 +381,27 @@ struct Transcript: Codable, Sendable {
     var schema_version: Int? = nil
     var speaker_detection: [String: String]? = nil
     var participant_roster: ParticipantRoster? = nil
+    var meeting_title: String? = nil
+    var variant: String? = nil
 
     /// Write transcript.json and render transcript.md. Both writes are atomic
     /// (temp file + rename), so a partially written transcript never exists on
     /// disk — resumePending treats presence of transcript.json as "done".
-    func write(to dir: URL) throws {
+    func write(to dir: URL, basename: String = "transcript") throws {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        try Data(rendered(title: dir.lastPathComponent).utf8)
-            .write(to: dir.appendingPathComponent("transcript.md"), options: .atomic)
+        try Data(rendered(title: meeting_title.flatMap { $0.isEmpty ? nil : $0 } ?? dir.lastPathComponent).utf8)
+            .write(to: dir.appendingPathComponent("\(basename).md"), options: .atomic)
         try encoder.encode(self)
-            .write(to: dir.appendingPathComponent("transcript.json"), options: .atomic)
+            .write(to: dir.appendingPathComponent("\(basename).json"), options: .atomic)
     }
 
     private func rendered(title: String) -> String {
         var lines = ["# \(title)", "", "engine: \(engine) (\(model))", ""]
-        if let roster = participant_roster, !roster.participants.isEmpty {
+        if let variant { lines += ["variant: \(variant)", ""] }
+        if let roster = participant_roster {
             lines += ["## Participants", ""]
+            if roster.participants.isEmpty { lines.append("- Not observed") }
             for participant in roster.participants.sorted(by: { $0.name < $1.name }) {
                 let name = participant.name.replacingOccurrences(of: "*", with: "\\*")
                     .replacingOccurrences(of: "[", with: "\\[").replacingOccurrences(of: "]", with: "\\]")

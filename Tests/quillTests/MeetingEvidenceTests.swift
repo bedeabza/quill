@@ -60,3 +60,15 @@ final class MeetingEvidenceTests: XCTestCase {
         XCTAssertFalse(MeetingEvidence.hasCallControls(["Mute notifications", "Chat"]))
     }
 }
+
+extension MeetingEvidenceTests {
+    func testMeetingSubjectUsesScopedTitlesAndRejectsGenericLabels() {
+        XCTAssertEqual(MeetingEvidence.title(candidates: ["Meet - Weekly planning"], service: "Google Meet"), "Weekly planning")
+        XCTAssertEqual(MeetingEvidence.title(candidates: ["Budget review | Microsoft Teams"], service: "Microsoft Teams"), "Budget review")
+        XCTAssertEqual(MeetingEvidence.title(candidates: ["Zoom Meeting", "Meeting name: Design review"], service: "Zoom"), "Design review")
+        XCTAssertNil(MeetingEvidence.title(candidates: ["Google Meet", "Meet - abc-defg-hij", "https://meet.google.com/abc-defg-hij"], service: "Google Meet"))
+        XCTAssertNil(MeetingEvidence.title(candidates: ["Zoom Meeting"], service: "Zoom"))
+        XCTAssertNil(MeetingEvidence.title(candidates: ["Meet – abc-defg-hij"], service: "Google Meet"))
+        XCTAssertEqual(MeetingEvidence.title(candidates: ["Meeting topic: Roadmap"], service: "Zoom"), "Roadmap")
+    }
+}

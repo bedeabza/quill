@@ -221,6 +221,9 @@ enum TranscriptPostProcessor {
             guard flock(lock, LOCK_EX | LOCK_NB) == 0 else { return PostProcessingReport(status: "skipped_busy") }
             let original = try Data(contentsOf: transcriptURL)
             let transcript = try JSONDecoder().decode(Transcript.self, from: original)
+            if transcript.variant == "elevenlabs_original" {
+                return PostProcessingReport(status: "skipped_elevenlabs_original")
+            }
             report.input_sha256 = hash(original)
             if let data = try? Data(contentsOf: reportURL),
                let previous = try? JSONDecoder().decode(PostProcessingReport.self, from: data),

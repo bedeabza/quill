@@ -7,6 +7,7 @@ final class MeetingAssistant {
     var onStop: (() -> Void)?
     var onStatus: ((String, Bool) -> Void)?
     var onSpeakers: ((SpeakerObservation) -> Void)?
+    var onMeeting: ((DetectedMeeting) -> Void)?
     private var policy = MeetingPolicy()
     private let scanner = MeetingScanner()
     private var timer: Timer?
@@ -75,6 +76,7 @@ final class MeetingAssistant {
         recordingGeneration += 1
         policy.recordingStarted(for: automaticStart, automatic: automaticStart != nil)
         recordingSpeakerMeetingID = tracking.recordingMeetingID(preferred: automaticStart?.id, previous: nil)
+        if let id = recordingSpeakerMeetingID, let meeting = tracking.meetings[id] { onMeeting?(meeting) }
         if let id = recordingSpeakerMeetingID, let roster = tracking.seed(meetingID: id, at: Date().timeIntervalSince1970) {
             onSpeakers?(roster)
         }
@@ -124,6 +126,7 @@ final class MeetingAssistant {
             let action = self.policy.update(scan.observations, now: ProcessInfo.processInfo.systemUptime)
             self.recordingSpeakerMeetingID = self.policy.recording
                 ? self.tracking.recordingMeetingID(preferred: self.policy.recordingMeeting?.id, previous: previousMeeting) : nil
+            if let id = self.recordingSpeakerMeetingID, let meeting = self.tracking.meetings[id] { self.onMeeting?(meeting) }
             if self.policy.recording, let id = self.recordingSpeakerMeetingID, id != previousMeeting,
                let roster = self.tracking.seed(meetingID: id, at: Date().timeIntervalSince1970) { self.onSpeakers?(roster) }
             self.needsZoomScreenPermission = scan.needsZoomScreenPermission && self.policy.recordingMeeting?.service == "Zoom"

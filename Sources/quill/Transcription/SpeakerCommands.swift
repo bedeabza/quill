@@ -8,7 +8,7 @@ struct Transcribe: ParsableCommand {
     @Argument(help: "Completed recording folder containing meta.json and audio.") var recording: String
     @Option(help: "Write a disposable preview into a new folder, leaving the recording unchanged.") var output: String?
     @Flag(help: "Replace an existing transcript. Speaker IDs and manual names will be regenerated.") var force = false
-    @Flag(help: "Skip speaker separation.") var noSpeakers = false
+    @Flag(help: "Skip local speaker separation, or skip UI name mapping with ElevenLabs (Scribe still diarizes).") var noSpeakers = false
     @Flag(help: "Require cached local models. Reject cloud transcription and prevent downloads.") var offline = false
     @Option(help: "Use parakeet (local) or elevenlabs (uploads audio) for this run without changing the menu setting.") var engine: TranscriptionEngineKind?
     @Option(help: "Known number of speaking people on the remote audio track. Normally inferred automatically.") var remoteSpeakers: Int?
@@ -84,6 +84,9 @@ struct LabelSpeaker: ParsableCommand {
         guard flock(lock, LOCK_EX | LOCK_NB) == 0 else { throw ValidationError("Transcript processing is already running.") }
         let original = try Data(contentsOf: url)
         var transcript = try JSONDecoder().decode(Transcript.self, from: original)
+        guard transcript.variant != "elevenlabs_original" else {
+            throw ValidationError("The original ElevenLabs transcript is preserved unchanged. Use speakers refresh to generate the separate named variant from recorded UI evidence.")
+        }
         func matches(_ segment: Transcript.Segment) -> Bool {
             soleRemoteSpeaker ? (segment.source == "system" || segment.speaker == "them") : segment.speaker == speaker
         }

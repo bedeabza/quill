@@ -7,58 +7,55 @@ final class SpeakerRefreshTests: XCTestCase, @unchecked Sendable {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("quill-speaker-refresh-test-" + UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
         addTeardownBlock { try FileManager.default.removeItem(at: directory) }
-        let audio = directory.appendingPathComponent("system.caf")
-        try Data("synthetic cached audio".utf8).write(to: audio)
-        let response = ElevenLabsEngine.Response(language_code: "eng", language_probability: 1, text: "Hello.",
-            words: [.init(text: "Hello.", start: 9, end: 9.5, type: "word")])
-        let cache = ElevenLabsEngine.Cache(version: 1, model: "scribe_v2", audioSHA256: try ElevenLabsEngine.fingerprint(audio), response: response)
-        try JSONEncoder().encode(cache).write(to: directory.appendingPathComponent("elevenlabs-system.caf.json"))
-        let transcript = Transcript(engine: "elevenlabs", model: "scribe_v2", created_at: "fixture", segments: [
-            .init(speaker: "system_1", start_ms: 9250, end_ms: 9750, text: "Hello.", source: "system"),
-            .init(speaker: "me", start_ms: 20000, end_ms: 21000, text: "Local words.", source: "mic", speaker_name: "Local person")], schema_version: 2)
-        try transcript.write(to: directory)
-        let analysis = SpeakerAnalysis(turns: [.init(speaker_id: "system_1", start: 0.25, end: 12.25),
-                                               .init(speaker_id: "system_1", start: 20.25, end: 32.25)], names: [:])
-        try JSONEncoder().encode(analysis).write(to: directory.appendingPathComponent("speaker-analysis.json"))
-        try Data(#"{"files":{"system":"system.caf"},"audio_started_at":1000,"start_offset_ms":{"system":250}}"#.utf8)
+        try Data(#"{"files":{"mic":"mic.caf","system":"system.caf"},"audio_started_at":1000,"start_offset_ms":{"system":250},"local_speaker_name":"Local person","meeting_title":"Planning"}"#.utf8)
             .write(to: directory.appendingPathComponent("meta.json"))
-        var observations: [SpeakerObservation] = []
-        for base in [1.0, 21.0] {
-            for step in 0...28 {
-                observations.append(SpeakerObservation(observed_at: 1000.25 + base + Double(step) * 0.25,
-                    meeting_id: "fixture", names: ["Alice"], source: "meeting_tile"))
-            }
+        let meta = try SessionMeta.read(from: directory)
+        var tracks: [ElevenLabsTranscripts.TrackResult] = []
+        for track in meta.tracks {
+            let audio = directory.appendingPathComponent(track.file)
+            try Data("synthetic cached audio".utf8).write(to: audio)
+            let remote = track.source == "system"
+            let response = ElevenLabsEngine.Response(language_code: "eng", language_probability: 1,
+                text: remote ? "Hello." : "Local words.", words: [.init(text: remote ? "Hello." : "Local words.",
+                    start: remote ? 9 : 20, end: remote ? 10 : 21, type: "word", speaker_id: "speaker_0")])
+            let cache = ElevenLabsEngine.Cache(version: ElevenLabsEngine.cacheVersion, model: "scribe_v2",
+                audioSHA256: try ElevenLabsEngine.fingerprint(audio), response: response)
+            try JSONEncoder().encode(cache).write(to: directory.appendingPathComponent("elevenlabs-\(track.file).json"))
+            tracks.append(.init(track: track, segments: try ElevenLabsEngine.segments(response)))
+        }
+        let observations = (0..<4).map { index in
+            SpeakerObservation(observed_at: 1000.25 + 9.125 + Double(index) * 0.25,
+                meeting_id: "fixture", names: ["Alice"], source: "meeting_tile")
         }
         let lines = try observations.map { String(decoding: try JSONEncoder().encode($0), as: UTF8.self) }.joined(separator: "\n")
         try Data(lines.utf8).write(to: directory.appendingPathComponent("speaker-observations.jsonl"))
+        try ElevenLabsTranscripts.build(meta: meta, tracks: tracks, roster: ParticipantRoster(audio_started_at: 1000), observations: []).write(to: directory)
         return directory
     }
 
-    func testOfflineRefreshBacksUpAndPreservesWordsOffsetsAndLocalSpeaker() async throws {
-        let directory = try fixture()
-        let url = directory.appendingPathComponent("transcript.json")
+    func testOfflineRefreshPreservesOriginalAndCreatesSeparateNamedVariant() async throws {
+        let directory = try fixture(), url = directory.appendingPathComponent("transcript.json")
         let original = try Data(contentsOf: url)
-        let command = try RefreshSpeakers.parse([directory.path])
-        try await command.refresh()
-        let transcript = try JSONDecoder().decode(Transcript.self, from: Data(contentsOf: url))
-        XCTAssertEqual(transcript.segments.map(\.text), ["Hello.", "Local words."])
-        XCTAssertEqual(transcript.segments.map(\.start_ms), [9250, 20000])
-        XCTAssertEqual(transcript.segments.map(\.end_ms), [9750, 21000])
-        XCTAssertEqual(transcript.segments.map(\.speaker_name), ["Alice", "Local person"])
-        let backups = try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil).filter { $0.lastPathComponent.hasPrefix("speaker-refresh-backup-") }
+        try await RefreshSpeakers.parse([directory.path]).refresh()
+        XCTAssertEqual(try Data(contentsOf: url), original)
+        let named = try JSONDecoder().decode(Transcript.self, from: Data(contentsOf: directory.appendingPathComponent("transcript-named.json")))
+        XCTAssertEqual(named.segments.map(\.text), ["Hello.", "Local words."])
+        XCTAssertEqual(named.segments.map(\.start_ms), [9250, 20000])
+        XCTAssertEqual(named.segments.map(\.end_ms), [10250, 21000])
+        XCTAssertEqual(named.segments.compactMap(\.speaker_name), ["Alice", "Local person"])
+        XCTAssertEqual(named.meeting_title, "Planning")
+        let backups = try FileManager.default.contentsOfDirectory(atPath: directory.path).filter { $0.hasPrefix("speaker-refresh-backup-") }
         XCTAssertEqual(backups.count, 1)
-        XCTAssertEqual(try Data(contentsOf: backups[0].appendingPathComponent("transcript.json")), original)
-        let analysis = try JSONDecoder().decode(SpeakerAnalysis.self, from: Data(contentsOf: directory.appendingPathComponent("speaker-analysis.json")))
-        XCTAssertEqual(analysis.voice_identities?["system_1"]?.name, "Alice")
+        XCTAssertEqual(try Data(contentsOf: directory.appendingPathComponent(backups[0]).appendingPathComponent("transcript.json")), original)
     }
 
     func testPreviewLeavesRecordingUnchanged() async throws {
         let directory = try fixture(), preview = directory.appendingPathComponent("preview")
         let original = try Data(contentsOf: directory.appendingPathComponent("transcript.json"))
-        let command = try RefreshSpeakers.parse([directory.path, "--output", preview.path])
-        try await command.refresh()
+        try await RefreshSpeakers.parse([directory.path, "--output", preview.path]).refresh()
         XCTAssertEqual(try Data(contentsOf: directory.appendingPathComponent("transcript.json")), original)
-        XCTAssertTrue(FileManager.default.fileExists(atPath: preview.appendingPathComponent("transcript.json").path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: directory.appendingPathComponent("transcript-named.json").path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: preview.appendingPathComponent("transcript-named.json").path))
     }
 
     func testEditedTextAndManualLabelsAreNotOverwritten() async throws {
@@ -75,12 +72,33 @@ final class SpeakerRefreshTests: XCTestCase, @unchecked Sendable {
         }
     }
 
-    func testChangedAudioInvalidatesCachedWordTimes() async throws {
+    func testChangedAudioInvalidatesCachedDiarization() async throws {
         let directory = try fixture(), url = directory.appendingPathComponent("transcript.json")
         let original = try Data(contentsOf: url)
         try Data("changed audio".utf8).write(to: directory.appendingPathComponent("system.caf"))
         do { try await RefreshSpeakers.parse([directory.path]).refresh(); XCTFail("Mismatched audio should be rejected") }
         catch { XCTAssertTrue(error is ValidationError) }
         XCTAssertEqual(try Data(contentsOf: url), original)
+    }
+
+    func testOldUndiarizedCacheAndForcedLocalSeparationAreRejected() async throws {
+        let directory = try fixture()
+        do { try await RefreshSpeakers.parse([directory.path, "--remote-speakers", "2"]).refresh(); XCTFail("Must not run local models") }
+        catch { XCTAssertTrue(error is ValidationError) }
+        let file = directory.appendingPathComponent("elevenlabs-system.caf.json")
+        let saved = try JSONDecoder().decode(ElevenLabsEngine.Cache.self, from: Data(contentsOf: file))
+        let old = ElevenLabsEngine.Cache(version: 1, model: saved.model, audioSHA256: saved.audioSHA256, response: saved.response)
+        try JSONEncoder().encode(old).write(to: file)
+        do { try await RefreshSpeakers.parse([directory.path]).refresh(); XCTFail("Version 1 did not request diarization") }
+        catch { XCTAssertTrue(error is ValidationError) }
+    }
+
+    func testMissingTimelineRemovesStaleNamedVariant() async throws {
+        let directory = try fixture()
+        try await RefreshSpeakers.parse([directory.path]).refresh()
+        try FileManager.default.removeItem(at: directory.appendingPathComponent("speaker-observations.jsonl"))
+        try await RefreshSpeakers.parse([directory.path]).refresh()
+        XCTAssertFalse(FileManager.default.fileExists(atPath: directory.appendingPathComponent("transcript-named.json").path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: directory.appendingPathComponent("transcript.json").path))
     }
 }
