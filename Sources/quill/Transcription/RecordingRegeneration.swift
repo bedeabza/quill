@@ -5,7 +5,8 @@ import Foundation
 /// retained until replacements succeed and are restored if any track fails.
 final class RecordingRegeneration {
     static let outputFiles = ["transcript.json", "transcript.md", "transcript-named.json", "transcript-named.md",
-        "speaker-analysis.json", "speaker-mapping.json", "postprocess.json", "speaker-refresh.json"]
+        "speaker-analysis.json", "speaker-mapping.json", "postprocess.json", "speaker-refresh.json",
+        MeetingAudio.filename, MeetingAudio.manifestName]
     let directory: URL
     let backup: URL
     private var descriptor: Int32 = -1
@@ -31,13 +32,14 @@ final class RecordingRegeneration {
             let fm = FileManager.default
             try fm.createDirectory(at: backup, withIntermediateDirectories: false)
             let meta = try SessionMeta.read(from: directory)
-            let caches = meta.tracks.map { "elevenlabs-\($0.file).json" }
+            let caches = meta.tracks.map { "elevenlabs-\($0.file).json" } + [MeetingAudio.cacheName]
             for name in Self.outputFiles + caches {
                 let original = directory.appendingPathComponent(name)
                 if fm.fileExists(atPath: original.path) { try fm.copyItem(at: original, to: backup.appendingPathComponent(name)) }
             }
             if freshCloud {
-                for name in caches {
+                // Old per-track responses remain intact for audit/legacy refresh.
+                for name in [MeetingAudio.cacheName] {
                     let url = directory.appendingPathComponent(name)
                     if fm.fileExists(atPath: url.path) { try fm.removeItem(at: url) }
                 }

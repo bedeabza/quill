@@ -33,7 +33,7 @@ final class RecordingsWindowController: NSWindowController, NSTableViewDataSourc
     private let variant = NSSegmentedControl(labels: ["Original", "With names"], trackingMode: .selectOne, target: nil, action: nil)
     private let engine = NSPopUpButton()
     private let fresh = NSButton(checkboxWithTitle: "Request a new ElevenLabs transcript", target: nil, action: nil)
-    private let cloudNote = NSTextField(wrappingLabelWithString: "Saved responses are reused when available. A new ElevenLabs request uploads audio again and may be billed again.")
+    private let cloudNote = NSTextField(wrappingLabelWithString: "One aligned recording with echo reduction is sent to ElevenLabs. Matching combined responses are reused. Older separate-track results need a new upload, which may be billed.")
     private let regenerateButton = NSButton(title: "Regenerate", target: nil, action: nil)
     private let openButton = NSButton(title: "Open folder", target: nil, action: nil)
 

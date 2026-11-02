@@ -126,18 +126,19 @@ actor MeetingScanner {
             guard let sample = await zoomDetector.sample(meetingID: meetingID, pid: entry.pid, frame: windowFrame, videos: before),
                   frame(entry.window) == windowFrame, zoomSnapshots(controls) == before else { return nil }
             zoomScores[meetingID] = sample.scores
-            return SpeakerObservation(observed_at: sample.observedAt, meeting_id: meetingID, names: sample.names, source: "zoom_border")
+            return SpeakerObservation(observed_at: sample.observedAt, meeting_id: meetingID, names: sample.names, source: "zoom_border", local_names: sample.localNames)
         }
         guard
               let cached = tiles[meetingID], !cached.isEmpty else { return nil }
         let started = Date().timeIntervalSince1970
-        var names: [String] = []
+        var names: [String] = [], localNames: [String] = []
         let deadline = ProcessInfo.processInfo.systemUptime + 0.15
         let localName = Config.localSpeakerName()
         for tile in cached {
             let currentName = tile.kind == .slackPeer
                 ? SlackTileEvidence.name(in: string(tile.nameElement, kAXDescriptionAttribute))
-                : SpeakerAttribution.cleanName(string(tile.nameElement, kAXValueAttribute))
+                : tile.kind == .meet ? MeetTileEvidence.name(string(tile.nameElement, kAXValueAttribute), isLocal: tile.isLocal)
+                    : SpeakerAttribution.cleanName(string(tile.nameElement, kAXValueAttribute))
             guard !isDestroyed(tile.indicator), currentName == tile.name else {
                 invalidateSpeakerTiles(meetingID)
                 return nil
@@ -149,7 +150,6 @@ actor MeetingScanner {
             }
             let isLocal = tile.isLocal || SpeakerAttribution.isLocalName(tile.name, localName: localName)
                 || (tile.kind == .meet && classes.contains("eQJ1qd"))
-            guard !isLocal else { continue }
             if tile.kind == .slackPeer {
                 guard let speaking = SlackTileEvidence.activity(root: tile.indicator, expectedName: tile.name,
                     hasTime: { ProcessInfo.processInfo.systemUptime < deadline }, read: { element in
@@ -163,13 +163,15 @@ actor MeetingScanner {
                     invalidateSpeakerTiles(meetingID)
                     return nil
                 }
-                if speaking { names.append(tile.name) }
-            } else if tile.kind.isSpeaking(classes) { names.append(tile.name) }
+                if speaking { if isLocal { localNames.append(tile.name) } else { names.append(tile.name) } }
+            } else if tile.kind.isSpeaking(classes) {
+                if isLocal { localNames.append(tile.name) } else { names.append(tile.name) }
+            }
         }
         let ended = Date().timeIntervalSince1970
         guard ended - started <= 0.2 else { return nil }
         return SpeakerObservation(observed_at: (started + ended) / 2, meeting_id: meetingID,
-                                  names: Array(Set(names)).sorted(), source: "meeting_tile")
+                                  names: Array(Set(names)).sorted(), source: "meeting_tile", local_names: Array(Set(localNames)).sorted())
     }
 
     private func invalidateSpeakerTiles(_ id: String) {

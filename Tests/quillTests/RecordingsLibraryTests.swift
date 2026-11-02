@@ -36,7 +36,7 @@ final class RecordingsLibraryTests: XCTestCase, @unchecked Sendable {
         let meta: [String: Any] = ["files": ["mic": "mic.caf"], "started": started, "audio_started_at": 1000,
                                   "meeting_title": "Weekly planning", "duration_seconds": 120]
         try JSONSerialization.data(withJSONObject: meta).write(to: directory.appendingPathComponent("meta.json"))
-        try Data("original audio".utf8).write(to: directory.appendingPathComponent("mic.caf"))
+        try AudioTestSupport.write(directory.appendingPathComponent("mic.caf"))
         var roster = ParticipantRoster(audio_started_at: 1000)
         roster.observe(.init(observed_at: 1000, meeting_id: "test", names: ["Alice"]), localName: nil)
         try JSONEncoder().encode(roster).write(to: directory.appendingPathComponent("participants.json"))
@@ -161,7 +161,7 @@ final class RecordingsLibraryTests: XCTestCase, @unchecked Sendable {
         let current = try JSONDecoder().decode(Transcript.self, from: Data(contentsOf: directory.appendingPathComponent("transcript.json")))
         XCTAssertEqual(current.segments.map(\.text), ["Regenerated words."])
         let calls = await engine.calls
-        XCTAssertEqual(calls, ["mic.caf"])
+        XCTAssertEqual(calls, [MeetingAudio.filename])
         let backups = try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil).filter { $0.lastPathComponent.hasPrefix("transcription-backup-") }
         XCTAssertEqual(backups.count, 1)
         XCTAssertEqual(try Data(contentsOf: backups[0].appendingPathComponent("transcript.json")), previous)
@@ -180,7 +180,7 @@ final class RecordingsLibraryTests: XCTestCase, @unchecked Sendable {
 
     func testSavedResponsesAreReusedUnlessFreshCloudIsRequested() async throws {
         let directory = try recording(in: root())
-        let cache = directory.appendingPathComponent("elevenlabs-mic.caf.json")
+        let cache = directory.appendingPathComponent(MeetingAudio.cacheName)
         try Data("saved response".utf8).write(to: cache)
         let engine = LibraryTranscriptionStub()
         let coordinator = TranscriptionCoordinator { _, _ in engine }

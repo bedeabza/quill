@@ -1,13 +1,14 @@
 import Foundation
 
-/// Maps provider diarization to recorded active-speaker evidence. No acoustic
-/// model, voice memory, roster inference or text cleanup is used on this path.
+/// Maps provider diarization to recorded active-speaker evidence. No local
+/// speaker model, voice memory, roster inference or text cleanup is used.
 enum ElevenLabsTranscripts {
     static let threshold = 0.95
 
     struct TrackResult {
         let track: SessionMeta.Track
         let segments: [TranscriptSegment]
+        var meetingAudio: MeetingAudio.Manifest? = nil
     }
 
     struct SpeakerEvidenceReport: Codable {
@@ -69,10 +70,17 @@ enum ElevenLabsTranscripts {
         return result
     }
 
-    private static func timelineSpans(_ observations: [SpeakerObservation], origin: Double) -> [NamedSpeakerSpan] {
-        let activity = observations.filter {
+    private static func timelineSpans(_ observations: [SpeakerObservation], origin: Double,
+                                      meetingAudio: MeetingAudio.Manifest? = nil, localName: String? = nil,
+                                      sharedMicrophone: Bool = false) -> [NamedSpeakerSpan] {
+        let samples = observations.flatMap { sample -> [SpeakerObservation] in
+            guard meetingAudio != nil, !sharedMicrophone, let local = sample.local_names, !local.isEmpty else { return [sample] }
+            return [sample, .init(observed_at: sample.observed_at, meeting_id: sample.meeting_id,
+                names: local, source: sample.source, is_local: true)]
+        }
+        let activity = samples.filter {
             ["meeting_tile", "zoom_border", "accessibility_active_speaker"].contains($0.source)
-                && $0.observed_at.isFinite && $0.is_local != true
+                && $0.observed_at.isFinite
         }
         // Bound each snapshot to one 250ms sampling window. Do not bridge UI
         // gaps or discard short contradictory observations before the 95% vote.
@@ -80,10 +88,29 @@ enum ElevenLabsTranscripts {
         return activity.flatMap { sample -> [NamedSpeakerSpan] in
             let time = sample.observed_at - origin
             guard time + 0.125 > 0 else { return [] }
-            return sample.names.compactMap { raw in
+            return sample.names.compactMap { raw -> NamedSpeakerSpan? in
                 guard let name = SpeakerAttribution.cleanName(raw) else { return nil }
+                let local = sample.is_local == true || SpeakerAttribution.isLocalName(name, localName: localName)
+                guard meetingAudio != nil || !local, !local || !sharedMicrophone else { return nil }
                 return NamedSpeakerSpan(start: max(0, time - 0.125), end: time + 0.125,
                     identity: .init(name: name, source: sample.source, evidence_count: 1))
+            }.flatMap { span -> [NamedSpeakerSpan] in
+                guard let meetingAudio else { return [span] }
+                let local = sample.is_local == true || SpeakerAttribution.isLocalName(span.identity.name, localName: localName)
+                let windows = local ? meetingAudio.local_windows : meetingAudio.remote_windows
+                // Sorted disjoint source windows: binary search avoids scanning
+                // a full hour's envelope for every 250ms UI observation.
+                var low = 0, high = windows.count
+                while low < high {
+                    let middle = (low + high) / 2
+                    if windows[middle].end <= span.start { low = middle + 1 } else { high = middle }
+                }
+                var clipped: [NamedSpeakerSpan] = []
+                while low < windows.count, windows[low].start < span.end {
+                    clipped.append(.init(start: max(span.start, windows[low].start), end: min(span.end, windows[low].end), identity: span.identity))
+                    low += 1
+                }
+                return clipped
             }
         }
     }
@@ -124,12 +151,11 @@ enum ElevenLabsTranscripts {
             let turns = speech.flatMap { id, intervals in intervals.map { SpeakerTurn(speaker_id: id, start: $0.start, end: $0.end) } }
             analysis.turns += turns.map { SpeakerTurn(speaker_id: $0.speaker_id, start: $0.start + offset, end: $0.end + offset) }
             statuses[source] = result.segments.isEmpty ? "no_speech_detected" : "elevenlabs"
-            guard source == "system" else { continue }
+            guard source == "system" || source == "meeting" else { continue }
             let spans: [NamedSpeakerSpan]
             if let started = meta.audioStartedAt {
-                spans = timelineSpans(observations.filter {
-                    $0.is_local != true && !$0.names.contains(where: { SpeakerAttribution.isLocalName($0, localName: meta.localSpeakerName) })
-                }, origin: started + offset)
+                spans = timelineSpans(observations, origin: started + offset, meetingAudio: result.meetingAudio,
+                                      localName: meta.localSpeakerName, sharedMicrophone: meta.sharedMicrophone)
             } else { spans = [] }
             analysis.named_spans += spans.map { NamedSpeakerSpan(start: $0.start + offset, end: $0.end + offset, identity: $0.identity) }
             for id in speech.keys.sorted() {
@@ -171,7 +197,10 @@ enum ElevenLabsTranscripts {
         }
         merged.sort { $0.start_ms < $1.start_ms }
         analysis.turns.sort { $0.start < $1.start }
-        let report = MappingReport(accepted: !reports.isEmpty && reports.allSatisfy(\.accepted), speakers: reports)
+        var report = MappingReport(accepted: !reports.isEmpty && reports.allSatisfy(\.accepted), speakers: reports)
+        if tracks.contains(where: { $0.track.source == "meeting" }) {
+            report.rule = "Every speaker in the combined meeting recording needs >=95% agreement by observed speech duration. Only clear matching-source audio windows may vote. Missing evidence fails; unobserved speech is excluded from the denominator."
+        }
         let original = Transcript(engine: "elevenlabs", model: "scribe_v2", created_at: createdAt, segments: merged,
             schema_version: 3, speaker_detection: statuses, participant_roster: roster,
             meeting_title: meta.meetingTitle, variant: "elevenlabs_original")

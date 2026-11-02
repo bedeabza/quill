@@ -114,9 +114,10 @@ Manual regeneration uses the app's serial transcription queue, even when
 automatic transcription is disabled. A recording cannot be queued twice; active
 or unfinished recordings cannot be regenerated. Previous outputs and saved
 responses are copied to a `transcription-backup-…` folder inside the recording.
-If any audio track fails, the previous transcript files are restored. Audio is
-never replaced, and any successfully completed cloud track stays cached for a
-retry. The regeneration does not run automatic cleanup or the archive hook.
+If audio preparation or transcription fails, the previous transcript and
+prepared-audio files are restored. Original captures are never replaced; a
+completed combined cloud response stays cached for retry. The regeneration
+does not run automatic cleanup or the archive hook.
 Processing shares a lock with the CLI, speaker-label and speaker-refresh
 commands so they cannot replace the same transcript concurrently.
 
@@ -129,13 +130,17 @@ Each session lands in `~/Recordings/<yyyy.MM.dd-HHmm>/`:
 | `meta.json` | start/end timestamps, duration, per-track start offsets |
 | `transcript.json` | canonical transcript — engine provenance + timed, speaker-tagged segments |
 | `transcript.md` | the same transcript rendered for reading |
-| `transcript-named.json`, `transcript-named.md` | ElevenLabs only: a separate named copy, created only when every remote speaker passes the 95% timeline agreement threshold |
+| `meeting-audio.wav` | ElevenLabs only: one aligned 16 kHz mono recording, with playback-reference echo reduction before mixing |
+| `meeting-audio.json` | preparation version, original checksums/offsets, combined checksum, duration, energy diagnostics and conservative source windows |
+| `elevenlabs-meeting-audio.wav.json` | cached Scribe response for the combined recording |
+| `transcript-named.json`, `transcript-named.md` | ElevenLabs only: a separate named copy, created only when every combined speaker passes the 95% timeline agreement threshold |
 | `speaker-mapping.json` | ElevenLabs only: per-speaker agreement, observed speech coverage, ambiguity and acceptance decision |
 | `transcribe.log` | transcription progress/errors for this session |
 
-Two tracks keep your microphone separate from remote audio. Quill now runs
-speaker diarization on the remote track and aligns speakers to individual
-word timestamps. CAF needs no finalization pass, so audio already written
+Two original tracks keep your microphone separate from remote audio. Parakeet
+transcribes tracks separately and performs local speaker separation. ElevenLabs
+receives one prepared meeting recording and supplies one set of speaker IDs.
+CAF needs no finalization pass, so audio already written
 remains readable if the process exits unexpectedly.
 
 ## Optional transcript cleanup
@@ -235,13 +240,13 @@ receive stable IDs within that transcript and readable labels such as
 With ElevenLabs, Scribe v2 performs diarization (`diarize=true`). Quill never
 runs local diarization or voice-memory matching on that path. `transcript.json`
 and `transcript.md` preserve the Scribe text, times and anonymous speakers;
-`provider_speaker_id` retains Scribe's original track-scoped ID. Readable speaker
-numbers are unique across the two tracks. Automatic transcript cleanup and
+`provider_speaker_id` retains Scribe's original ID from the combined recording.
+Readable speaker numbers share one meeting-wide list. Automatic transcript cleanup and
 roster-based speaker relabeling do not modify this original.
 
-Quill compares each remote speaker's timed words with recorded active-speaker
+Quill compares each combined speaker's timed words with recorded active-speaker
 UI evidence. A name must account for at least 95% of that speaker's **observed
-speech duration**, and **every remote speaker must pass** before Quill writes
+speech duration**, and **every speaker must pass** before Quill writes
 `transcript-named.json` and `transcript-named.md`. No evidence or an unknown
 provider speaker fails the check. Time without observations is excluded from
 the denominator; `speaker-mapping.json` also reports coverage so that 100%
@@ -249,8 +254,12 @@ agreement is not mistaken for 100% observation. Duplicated evidence counts once;
 conflicting names and overlapping provider voices count as ambiguity. Caption
 text, participant lists and saved voice fingerprints do not vote for names.
 The named copy changes names and attribution only, retaining speaker IDs,
-wording, segment boundaries and timestamps. The personal microphone can use its
-configured local name in this copy; a shared microphone stays anonymous.
+wording, segment boundaries and timestamps. For combined audio, a local name
+also requires actual local active-speaker evidence; it is never assigned from
+the microphone setting alone. Only clear local-only or remote-only audio
+windows may support the corresponding UI name. Overlap and uncertain source
+windows do not vote. Shared-microphone local tiles cannot establish individual
+names. Legacy separate-track recordings retain their original refresh rules.
 
 Both variants include the observed participant roster and, when exposed by the
 identified meeting's own window/document/tab, the meeting title. The title is
@@ -434,8 +443,9 @@ requires a new model download, even if the old models are cached. Existing
 transcripts are left as they are; this change applies to pending and future
 transcriptions.
 
-Each track is transcribed separately, shifted by its start offset so both
-share one clock, and merged by timestamp. Jobs run in a serial queue — you can
+With Parakeet, each track is transcribed separately, shifted by its start
+offset and merged by timestamp. ElevenLabs uses one aligned meeting recording.
+Jobs run in a serial queue — you can
 start a new recording while the last one transcribes. Unfinished jobs resume
 on next launch (the filesystem is the queue: a session with `meta.json` but no
 `transcript.json` is pending). Failures append to the session's
@@ -468,18 +478,32 @@ Quill uses the login Keychain's normal macOS access control.
 
 ElevenLabs uses `scribe_v2`, automatic language detection, speaker diarization
 and word timestamps.
-It uploads each track separately after converting it to 16 kHz mono WAV.
+Quill aligns both tracks using their saved start offsets, uses bundled
+SpeexDSP echo cancellation to reduce system playback leaking into the mic,
+then mixes the cleaned mic and direct system audio at half gain each into
+one 16 kHz mono WAV. A recording with just one declared track is aligned
+without mixing or echo cancellation. Missing/invalid declared tracks fail
+before any upload. The original CAF files remain unchanged.
+
+One combined file is sent in one request, or its matching cached response is
+reused. No external audio tools need to be installed. Echo reduction is best
+effort: clipping, room acoustics, capture-clock drift and overlapping voices
+can still limit accuracy. It does not guarantee the true number of people.
 Transcription requests use a five-minute timeout.
-Only the optional timeline-based name mapping runs locally afterward. The
+Audio preparation and optional timeline-based name mapping run locally. The
 selected transcript cleanup mode is skipped to preserve the original. The
 archive hook runs after both outputs have been prepared. Standard
 ElevenLabs account billing and request retention settings apply.
 
 API failures leave the session pending. Successful responses are saved as
-`elevenlabs-mic.caf.json` and `elevenlabs-system.caf.json` alongside the recording,
-keyed by the original audio checksum and model. This lets a resumed session
-reuse a completed track without uploading it again. No key is included in
-those caches. A network failure after the service accepted a request can still
+`elevenlabs-meeting-audio.wav.json` alongside the recording, keyed by the
+combined audio checksum and model. The preparation manifest also validates
+the original checksums, offsets and preparation version. Old per-track
+responses remain available for audit and legacy speaker refresh, but are
+never combined or reused as a meeting-wide response. Regenerating an old
+recording therefore requires a new upload once; **Request a new ElevenLabs
+transcript** subsequently invalidates only the combined response. No key is
+included in these caches. A network failure after the service accepted a request can still
 require a billed retry; the API does not provide exactly-once delivery here.
 
 ```bash

@@ -135,6 +135,35 @@ final class ElevenLabsEngineTests: XCTestCase, @unchecked Sendable {
         task.cancel()
     }
 
+    func testCoordinatorSendsOneHTTPUploadAndReusesCombinedResponse() async throws {
+        MockScribeProtocol.state.reset()
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [MockScribeProtocol.self]
+        let session = URLSession(configuration: configuration)
+        defer { session.invalidateAndCancel() }
+        let engine = ElevenLabsEngine(keyProvider: { "test-secret-not-a-real-key" }, session: session)
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        for file in ["mic.caf", "system.caf"] { try AudioTestSupport.write(directory.appendingPathComponent(file), samples: [Int16](repeating: 0, count: 64000)) }
+        try Data(#"{"files":{"mic":"mic.caf","system":"system.caf"},"audio_started_at":1000}"#.utf8)
+            .write(to: directory.appendingPathComponent("meta.json"))
+        let coordinator = TranscriptionCoordinator { _, _ in engine }
+        try await coordinator.transcribe(directory, engineOverride: .elevenLabs)
+        XCTAssertEqual(MockScribeProtocol.state.requestCount(), 1)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: directory.appendingPathComponent(MeetingAudio.cacheName).path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: directory.appendingPathComponent("elevenlabs-mic.caf.json").path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: directory.appendingPathComponent("elevenlabs-system.caf.json").path))
+        try await coordinator.transcribe(directory, engineOverride: .elevenLabs)
+        XCTAssertEqual(MockScribeProtocol.state.requestCount(), 1)
+        let output = try JSONDecoder().decode(Transcript.self, from: Data(contentsOf: directory.appendingPathComponent("transcript.json")))
+        XCTAssertEqual(Set(output.segments.map(\.speaker)).count, 1)
+        XCTAssertTrue(output.segments.allSatisfy { $0.source == "meeting" })
+        try AudioTestSupport.write(directory.appendingPathComponent("mic.caf"), samples: [Int16](repeating: 1000, count: 64000))
+        try await coordinator.transcribe(directory, engineOverride: .elevenLabs)
+        XCTAssertEqual(MockScribeProtocol.state.requestCount(), 2)
+    }
+
     func testCompletedTrackCachePreventsRepeatedUploadsAndChangesInvalidateIt() async throws {
         MockScribeProtocol.state.reset()
         let config = URLSessionConfiguration.ephemeral

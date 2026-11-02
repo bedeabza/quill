@@ -2,6 +2,11 @@
 
 Validated November 1, 2026.
 
+This documents the initial separate-track pipeline. The November 2 combined
+recording pipeline supersedes its upload, cache and mixed-speaker naming rules;
+see [single-recording validation](single-recording-validation.md). Legacy
+separate-track speaker refresh remains supported.
+
 ## Behavior
 
 - ElevenLabs requests Scribe v2 diarization and retains each word's provider

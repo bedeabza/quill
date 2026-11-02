@@ -197,11 +197,24 @@ actor TranscriptionCoordinator {
         }
         for observation in observations { roster.observe(observation, localName: meta.localSpeakerName) }
 
+        if engine.name == TranscriptionEngineKind.elevenLabs.rawValue {
+            log(dir, "preparing one aligned meeting recording with playback-reference echo cancellation")
+            let prepared = try await MeetingAudio.prepare(in: dir, meta: meta)
+            log(dir, "transcribing \(MeetingAudio.filename) (elevenlabs; one meeting request or cached response)")
+            let segments = try await engine.transcribe(prepared.audio)
+            let track = SessionMeta.Track(file: MeetingAudio.filename, speaker: "meeting", offsetMs: 0)
+            let output = ElevenLabsTranscripts.build(meta: meta,
+                tracks: [.init(track: track, segments: segments, meetingAudio: prepared.manifest)], roster: roster,
+                observations: detectSpeakers ? observations : [])
+            try output.write(to: dir)
+            log(dir, "ElevenLabs meeting diarization; name mapping: \(output.report.accepted ? "accepted" : "below threshold or missing evidence")")
+            return
+        }
+
         var merged: [Transcript.Segment] = []
         var analysis = SpeakerAnalysis(turns: [], names: [:])
         var speakerStatus: [String: String] = [:]
         var successfulTracks = 0
-        var cloudTracks: [ElevenLabsTranscripts.TrackResult] = []
         for track in meta.tracks {
             let audio = dir.appendingPathComponent(track.file)
             guard FileManager.default.fileExists(atPath: audio.path) else {
@@ -224,10 +237,6 @@ actor TranscriptionCoordinator {
                 continue
             }
             let offset = TimeInterval(track.offsetMs) / 1000
-            if engine.name == TranscriptionEngineKind.elevenLabs.rawValue {
-                cloudTracks.append(.init(track: track, segments: segments))
-                continue
-            }
             if detectSpeakers && (track.speaker == "them" || meta.sharedMicrophone) && !segments.isEmpty {
                 do {
                     log(dir, "separating speakers in \(track.file)")
@@ -284,13 +293,6 @@ actor TranscriptionCoordinator {
         }
         guard successfulTracks > 0 else {
             throw TranscriptionFailure("No audio track could be transcribed. See transcribe.log; the session remains pending.")
-        }
-        if engine.name == TranscriptionEngineKind.elevenLabs.rawValue {
-            let output = ElevenLabsTranscripts.build(meta: meta, tracks: cloudTracks, roster: roster,
-                                                    observations: detectSpeakers ? observations : [])
-            try output.write(to: dir)
-            log(dir, "ElevenLabs diarization; name mapping: \(output.report.accepted ? "accepted" : "below threshold or missing evidence")")
-            return
         }
         merged.sort { $0.start_ms < $1.start_ms }
         merged = roster.relabel(merged)
@@ -369,7 +371,7 @@ struct SessionMeta {
         let file: String
         let speaker: String
         let offsetMs: Int
-        var source: String { speaker == "me" ? "mic" : "system" }
+        var source: String { speaker == "meeting" ? "meeting" : speaker == "me" ? "mic" : "system" }
     }
 
     let tracks: [Track]

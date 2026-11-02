@@ -148,15 +148,15 @@ final class ElevenLabsTranscriptsTests: XCTestCase, @unchecked Sendable {
 
     func testCoordinatorNeverRunsLocalDiarizationWithElevenLabsAndCleanupDoesNotEditOriginal() async throws {
         let dir = try directory()
-        // Invalid audio is intentional: only the stub cloud engine may read it.
-        try Data("not local audio".utf8).write(to: dir.appendingPathComponent("system.caf"))
+        // Decode real synthetic audio for the mix; only the stub cloud engine runs ASR.
+        try AudioTestSupport.write(dir.appendingPathComponent("system.caf"))
         try Data(#"{"files":{"system":"system.caf"},"audio_started_at":1000,"meeting_title":"Planning"}"#.utf8)
             .write(to: dir.appendingPathComponent("meta.json"))
         let coordinator = TranscriptionCoordinator { _, _ in DiarizedScribeStub() }
         try await coordinator.transcribe(dir, detectSpeakers: true, engineOverride: .elevenLabs)
         let url = dir.appendingPathComponent("transcript.json"), original = try Data(contentsOf: url)
         let transcript = try JSONDecoder().decode(Transcript.self, from: original)
-        XCTAssertEqual(transcript.speaker_detection?["system"], "elevenlabs")
+        XCTAssertEqual(transcript.speaker_detection?["meeting"], "elevenlabs")
         XCTAssertEqual(transcript.segments[0].provider_speaker_id, "speaker_0")
         XCTAssertEqual(transcript.variant, "elevenlabs_original")
         XCTAssertEqual(transcript.meeting_title, "Planning")

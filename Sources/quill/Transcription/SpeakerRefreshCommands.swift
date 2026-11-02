@@ -45,14 +45,20 @@ struct RefreshSpeakers: ParsableCommand {
             throw ValidationError("Manual speaker corrections are present; refusing to overwrite them.")
         }
         var tracks: [ElevenLabsTranscripts.TrackResult] = []
-        for track in meta.tracks {
+        let mixed = transcript.speaker_detection?["meeting"] != nil || transcript.segments.contains(where: { $0.source == "meeting" })
+        let prepared = mixed ? try MeetingAudio.cached(in: directory, meta: meta) : nil
+        if mixed && prepared == nil {
+            throw ValidationError("The combined recording or its source manifest changed. Regenerate the ElevenLabs transcript; speaker refresh never rebuilds audio or uploads it.")
+        }
+        let sourceTracks = mixed ? [SessionMeta.Track(file: MeetingAudio.filename, speaker: "meeting", offsetMs: 0)] : meta.tracks
+        for track in sourceTracks {
             let cacheURL = directory.appendingPathComponent("elevenlabs-\(track.file).json")
             let cache = try JSONDecoder().decode(ElevenLabsEngine.Cache.self, from: Data(contentsOf: cacheURL))
             guard cache.version == ElevenLabsEngine.cacheVersion, cache.model == transcript.model,
                   cache.audioSHA256 == (try ElevenLabsEngine.fingerprint(directory.appendingPathComponent(track.file))) else {
                 throw ValidationError("Cached Scribe diarization does not match this audio and model. Regenerate the cloud transcript.")
             }
-            tracks.append(.init(track: track, segments: try ElevenLabsEngine.segments(cache.response)))
+            tracks.append(.init(track: track, segments: try ElevenLabsEngine.segments(cache.response), meetingAudio: prepared?.manifest))
         }
         let observationText = (try? String(contentsOf: directory.appendingPathComponent("speaker-observations.jsonl"), encoding: .utf8)) ?? ""
         let observations = try observationText.split(separator: "\n").map { try JSONDecoder().decode(SpeakerObservation.self, from: Data($0.utf8)) }
