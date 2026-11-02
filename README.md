@@ -82,6 +82,31 @@ transcription speed.
    automatically (the menu shows progress); a notification fires when the
    transcript is ready.
 
+Choose **Recordings…** in the Quill menu to browse recording folders in a native
+window. The list is ordered newest first and can be searched by meeting title,
+folder name or participant. Select a recording to preview its original
+transcript or the optional **With names** variant, and use **Open folder** to
+inspect its audio and files in Finder. **Choose folder…** opens another
+recordings root; choosing an individual completed recording selects it in its
+parent folder. The list and job statuses refresh while the window is open.
+
+To regenerate a transcript, select the recording, choose an engine and click
+**Regenerate**. The engine choice applies to this job without changing the
+default for new recordings. With ElevenLabs, matching saved responses are reused
+unless **Request a new ElevenLabs transcript** is checked; a new request uploads
+audio again and may be billed again. The usual Scribe diarization and 95% name
+mapping rules apply.
+
+Manual regeneration uses the app's serial transcription queue, even when
+automatic transcription is disabled. A recording cannot be queued twice; active
+or unfinished recordings cannot be regenerated. Previous outputs and saved
+responses are copied to a `transcription-backup-…` folder inside the recording.
+If any audio track fails, the previous transcript files are restored. Audio is
+never replaced, and any successfully completed cloud track stays cached for a
+retry. The regeneration does not run automatic cleanup or the archive hook.
+Processing shares a lock with the CLI, speaker-label and speaker-refresh
+commands so they cannot replace the same transcript concurrently.
+
 Each session lands in `~/Recordings/<yyyy.MM.dd-HHmm>/`:
 
 | File | Contents |

@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 
 /// Post-recording pipeline: a serial queue of session folders to transcribe.
@@ -15,7 +16,18 @@ actor TranscriptionCoordinator {
         case failed(session: String)
     }
 
-    private var queue: [URL] = []
+    enum Activity: Equatable, Sendable {
+        case queued, processing, failed(String)
+    }
+    private struct Job {
+        let directory: URL
+        var engine: TranscriptionEngineKind? = nil
+        var regenerate = false
+        var freshCloud = false
+    }
+    private var queue: [Job] = []
+    private var activeDirectory: URL?
+    private var failures: [URL: String] = [:]
     private var draining = false
     private var engine: TranscriptionEngine?
     private var engineOffline = false
@@ -43,8 +55,29 @@ actor TranscriptionCoordinator {
             runHook(for: sessionDir)
             return
         }
-        queue.append(sessionDir)
+        let directory = RecordingsLibrary.canonicalDirectory(sessionDir)
+        guard activeDirectory != directory, !queue.contains(where: { $0.directory == directory }) else { return }
+        failures.removeValue(forKey: directory)
+        queue.append(Job(directory: directory))
         drainIfIdle()
+    }
+
+    func regenerate(_ sessionDir: URL, engine: TranscriptionEngineKind, freshCloud: Bool = false) throws {
+        let directory = RecordingsLibrary.canonicalDirectory(sessionDir)
+        try RecordingRegeneration.validate(directory)
+        guard activeDirectory != directory, !queue.contains(where: { $0.directory == directory }) else {
+            throw TranscriptionFailure("This recording is already queued or being processed.")
+        }
+        failures.removeValue(forKey: directory)
+        queue.append(Job(directory: directory, engine: engine, regenerate: true, freshCloud: freshCloud && engine == .elevenLabs))
+        drainIfIdle()
+    }
+
+    func activity() -> [URL: Activity] {
+        var result = failures.mapValues { Activity.failed($0) }
+        for job in queue { result[job.directory] = .queued }
+        if let activeDirectory { result[activeDirectory] = .processing }
+        return result
     }
 
     /// Scan the recordings root for sessions that finished (meta.json exists)
@@ -58,13 +91,14 @@ actor TranscriptionCoordinator {
 
         let fm = FileManager.default
         let pending = entries
+            .map(RecordingsLibrary.canonicalDirectory)
             .filter {
                 fm.fileExists(atPath: $0.appendingPathComponent("meta.json").path)
                     && !fm.fileExists(atPath: $0.appendingPathComponent("transcript.json").path)
             }
             .sorted { $0.lastPathComponent < $1.lastPathComponent }
-        for dir in pending where !queue.contains(dir) {
-            queue.append(dir)
+        for dir in pending where activeDirectory != dir && !queue.contains(where: { $0.directory == dir }) {
+            queue.append(Job(directory: dir))
         }
         if !pending.isEmpty {
             FileHandle.standardError.write(Data(
@@ -85,24 +119,45 @@ actor TranscriptionCoordinator {
 
     private func drain() async {
         while !queue.isEmpty {
-            let dir = queue.removeFirst()
+            let job = queue.removeFirst()
+            let dir = job.directory
+            activeDirectory = dir
             publish(.transcribing(session: dir.lastPathComponent, queued: queue.count))
+            var replacement: RecordingRegeneration?
+            defer { replacement?.unlock() }
             do {
-                try await transcribe(dir)
-                let cleanupOptions = Config.postProcessing()
-                if cleanupOptions.mode != .off { publish(.postprocessing(session: dir.lastPathComponent, queued: queue.count)) }
-                let cleanup = await TranscriptPostProcessor.process(dir, options: cleanupOptions)
-                log(dir, "postprocess: \(cleanup.status)")
+                if job.regenerate {
+                    replacement = try RecordingRegeneration(directory: dir, freshCloud: job.freshCloud)
+                    log(dir, "regeneration backup: \(replacement!.backup.lastPathComponent)")
+                }
+                try await transcribe(dir, engineOverride: job.engine, learnVoiceMemory: !job.regenerate,
+                                     requireAllTracks: job.regenerate, processingLockHeld: job.regenerate)
+                if let replacement {
+                    try replacement.finish()
+                } else {
+                    let cleanupOptions = Config.postProcessing()
+                    if cleanupOptions.mode != .off { publish(.postprocessing(session: dir.lastPathComponent, queued: queue.count)) }
+                    let cleanup = await TranscriptPostProcessor.process(dir, options: cleanupOptions)
+                    log(dir, "postprocess: \(cleanup.status)")
+                    runHook(for: dir)
+                }
+                failures.removeValue(forKey: dir)
                 notifyUser(title: "quill — transcript ready", body: dir.lastPathComponent)
-                runHook(for: dir)
             } catch {
+                var message = String(describing: error)
+                if let replacement {
+                    do { try replacement.restore() }
+                    catch { message += ". Could not restore previous outputs: \(error). Backup: \(replacement.backup.path)" }
+                }
                 log(dir, "transcription failed: \(error)")
+                failures[dir] = message
                 lastFailure = dir.lastPathComponent
                 notifyUser(
                     title: "quill — transcription failed",
                     body: "\(dir.lastPathComponent) — see transcribe.log"
                 )
             }
+            activeDirectory = nil
         }
         await engine?.release()
         engine = nil
@@ -114,8 +169,18 @@ actor TranscriptionCoordinator {
     }
 
     func transcribe(_ dir: URL, detectSpeakers: Bool = Config.speakerDetection(), remoteSpeakerCount: Int? = nil,
-                    engineOverride: TranscriptionEngineKind? = nil, offline: Bool = false, learnVoiceMemory: Bool = true) async throws {
+                    engineOverride: TranscriptionEngineKind? = nil, offline: Bool = false, learnVoiceMemory: Bool = true,
+                    requireAllTracks: Bool = false, processingLockHeld: Bool = false) async throws {
         let meta = try SessionMeta.read(from: dir)
+        var descriptor: Int32 = -1
+        defer { if descriptor >= 0 { flock(descriptor, LOCK_UN); close(descriptor) } }
+        if !processingLockHeld {
+            descriptor = open(dir.appendingPathComponent(".postprocess.lock").path, O_CREAT | O_RDWR | O_CLOEXEC, 0o600)
+            guard descriptor >= 0 else { throw TranscriptionFailure("Could not lock this recording.") }
+            guard flock(descriptor, LOCK_EX | LOCK_NB) == 0 else {
+                throw TranscriptionFailure("This recording is already being processed. Try again when it finishes.")
+            }
+        }
         if (engineOverride?.rawValue ?? Config.transcriptionEngine()) == "elevenlabs", remoteSpeakerCount != nil {
             throw TranscriptionFailure("--remote-speakers is only supported by local diarization. ElevenLabs infers speakers in Scribe.")
         }
@@ -140,6 +205,7 @@ actor TranscriptionCoordinator {
         for track in meta.tracks {
             let audio = dir.appendingPathComponent(track.file)
             guard FileManager.default.fileExists(atPath: audio.path) else {
+                if requireAllTracks { throw TranscriptionFailure("Audio is missing: \(track.file)") }
                 log(dir, "skipping missing track \(track.file)")
                 continue
             }
@@ -153,7 +219,7 @@ actor TranscriptionCoordinator {
             } catch {
                 // Cloud failures must not publish a partial meeting as complete.
                 // Successful tracks have their own cache for the next attempt.
-                if engine.name == TranscriptionEngineKind.elevenLabs.rawValue { throw error }
+                if engine.name == TranscriptionEngineKind.elevenLabs.rawValue || requireAllTracks { throw error }
                 log(dir, "skipping \(track.file): \(error)")
                 continue
             }

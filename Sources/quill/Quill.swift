@@ -199,12 +199,14 @@ final class AppController: NSObject, NSApplicationDelegate {
     private let meetings = MeetingAssistant()
     private var session: RecordingSession?
     private var ticker: Timer?
+    private var recordingsWindow: RecordingsWindowController?
 
     init(root: URL) {
         self.root = root
         super.init()
         menuBar.onToggle = { [weak self] in self?.toggle() }
         menuBar.onOpenFolder = { [weak self] in self?.openFolder() }
+        menuBar.onBrowseRecordings = { [weak self] in self?.browseRecordings() }
         menuBar.onQuit = { [weak self] in self?.shutdown() }
         menuBar.update(recording: false, elapsed: nil)
         menuBar.onDetectionToggle = { [weak self] in self?.meetings.toggleEnabled() }
@@ -287,6 +289,7 @@ final class AppController: NSObject, NSApplicationDelegate {
     }
 
     private func showTranscription(_ status: TranscriptionCoordinator.Status) {
+        recordingsWindow?.refresh()
         switch status {
         case .idle:
             menuBar.updateTranscription(nil)
@@ -312,6 +315,11 @@ final class AppController: NSObject, NSApplicationDelegate {
     private func openFolder() {
         try? FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         NSWorkspace.shared.open(root)
+    }
+
+    private func browseRecordings() {
+        if recordingsWindow == nil { recordingsWindow = RecordingsWindowController(root: root, transcription: transcription) }
+        recordingsWindow?.show()
     }
 
     private static func format(_ interval: TimeInterval) -> String {

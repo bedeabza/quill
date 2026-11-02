@@ -2,7 +2,8 @@ import AppKit
 
 /// Status bar item in the top-right of the menu bar. Shows recording state at
 /// a glance and provides the only persistent control surface for the daemon
-/// (since we run as `.accessory` — no dock icon, no main window).
+/// and opens the on-demand recordings browser. The daemon runs as `.accessory`
+/// without a dock icon.
 @MainActor
 final class MenuBarController: NSObject, NSMenuDelegate {
     private let keychain: ElevenLabsKeychain
@@ -25,6 +26,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
 
     var onToggle: (() -> Void)?
     var onOpenFolder: (() -> Void)?
+    var onBrowseRecordings: (() -> Void)?
     var onQuit: (() -> Void)?
     var onDetectionToggle: (() -> Void)?
     var onPermission: (() -> Void)?
@@ -97,6 +99,9 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         cleanup.submenu = cleanupMenu
         menu.addItem(cleanup)
 
+        let browse = NSMenuItem(title: "Recordings…", action: #selector(browseRecordingsClicked), keyEquivalent: "b")
+        browse.target = self
+        menu.addItem(browse)
         let openFolder = NSMenuItem(
             title: "Open recordings folder",
             action: #selector(openFolderClicked),
@@ -291,5 +296,6 @@ final class MenuBarController: NSObject, NSMenuDelegate {
 
     @objc private func toggleClicked() { onToggle?() }
     @objc private func openFolderClicked() { onOpenFolder?() }
+    @objc private func browseRecordingsClicked() { onBrowseRecordings?() }
     @objc private func quitClicked() { onQuit?() }
 }
