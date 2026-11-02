@@ -55,6 +55,42 @@ final class ElevenLabsKeychain: @unchecked Sendable {
         }
     }
 
+    enum Access: Equatable, Sendable {
+        case available, missing, needsAuthorization, failed(String)
+    }
+
+    /// Check actual secret access without opening a macOS authorization dialog.
+    /// This does not validate the key with ElevenLabs or expose its value.
+    func checkAccess() -> Access {
+        Self.queue.sync {
+            var allowed = DarwinBoolean(false)
+            let status = SecKeychainGetUserInteractionAllowed(&allowed)
+            guard status == errSecSuccess else { return .failed(Failure(status: status).description) }
+            let disabled = SecKeychainSetUserInteractionAllowed(false)
+            guard disabled == errSecSuccess else { return .failed(Failure(status: disabled).description) }
+            defer { SecKeychainSetUserInteractionAllowed(allowed.boolValue) }
+            do {
+                guard let credential = try storage.read() else { return .missing }
+                _ = try Self.validated(credential.value)
+                return .available
+            } catch let error as Failure where error.status == errSecInteractionNotAllowed || error.status == errSecAuthFailed {
+                return .needsAuthorization
+            } catch { return .failed(String(describing: error)) }
+        }
+    }
+
+    /// Explicit user action: allow macOS to ask for access even when a locked
+    /// keychain prevents the usual noninteractive metadata lookup.
+    func authorizeAccess() throws -> Bool {
+        try Self.queue.sync {
+            cached = nil
+            guard let credential = try storage.read() else { return false }
+            let value = try Self.validated(credential.value)
+            cached = Credential(value: value, revision: credential.revision)
+            return true
+        }
+    }
+
     func read() throws -> String? {
         try Self.queue.sync {
             do {

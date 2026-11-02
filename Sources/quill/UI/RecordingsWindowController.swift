@@ -22,6 +22,7 @@ final class RecordingsWindowController: NSWindowController, NSTableViewDataSourc
     private var previewSignature: String?
     private var previewRequest = UUID()
     private var preferredSelection: URL?
+    private var permissionsWindow: PermissionsWindowController?
     private let table = NSTableView()
     private let search = NSSearchField()
     private let rootLabel = NSTextField(labelWithString: "")
@@ -69,11 +70,12 @@ final class RecordingsWindowController: NSWindowController, NSTableViewDataSourc
         guard let content = window?.contentView else { return }
         let choose = NSButton(title: "Choose folder…", target: self, action: #selector(chooseFolder))
         let refresh = NSButton(title: "Refresh", target: self, action: #selector(refreshClicked))
+        let permissions = NSButton(title: "Permissions…", target: self, action: #selector(checkPermissions))
         choose.setContentHuggingPriority(.required, for: .horizontal)
         refresh.setContentHuggingPriority(.required, for: .horizontal)
         rootLabel.lineBreakMode = .byTruncatingMiddle
         rootLabel.textColor = .secondaryLabelColor
-        let header = NSStackView(views: [rootLabel, choose, refresh])
+        let header = NSStackView(views: [rootLabel, choose, permissions, refresh])
         header.distribution = .fill
         header.spacing = 8
         rootLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
@@ -276,7 +278,11 @@ final class RecordingsWindowController: NSWindowController, NSTableViewDataSourc
         } ?? "Choose a recordings folder or start a recording from the Quill menu."
         let busy: Bool
         switch entry.flatMap({ activity[$0.directory] }) {
-        case .queued: statusLabel.stringValue = "Queued for transcription."; busy = true
+        case .queued:
+            let current = activity.first { $0.value == .processing }?.key.lastPathComponent
+            statusLabel.stringValue = current.map { "Queued — waiting for \($0) to finish. Recordings are processed one at a time." }
+                ?? "Queued — waiting for the transcription worker. Check Permissions… if this does not change."
+            busy = true
         case .processing: statusLabel.stringValue = "Transcribing… You can browse other recordings while this runs."; busy = true
         case .failed(let reason): statusLabel.stringValue = "Regeneration failed: \(reason)"; busy = false
         case nil: statusLabel.stringValue = entry?.canRegenerate == false ? "This recording is unfinished or its audio is unavailable." : ""; busy = false
@@ -323,6 +329,12 @@ final class RecordingsWindowController: NSWindowController, NSTableViewDataSourc
     @objc private func variantChanged() { updateSelection() }
     @objc private func engineChanged() { updateSelection() }
     @objc private func openFolder() { if let entry = selectedEntry { NSWorkspace.shared.open(entry.directory) } }
+
+    @objc private func checkPermissions() {
+        permissionsWindow?.close()
+        permissionsWindow = PermissionsWindowController(root: root, recording: selectedEntry?.directory, engine: selectedEngine)
+        permissionsWindow?.show()
+    }
     @objc private func chooseFolder() {
         guard let window else { return }
         let panel = NSOpenPanel()

@@ -27,6 +27,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     var onToggle: (() -> Void)?
     var onOpenFolder: (() -> Void)?
     var onBrowseRecordings: (() -> Void)?
+    var onCheckPermissions: (() -> Void)?
     var onQuit: (() -> Void)?
     var onDetectionToggle: (() -> Void)?
     var onPermission: (() -> Void)?
@@ -102,6 +103,9 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         let browse = NSMenuItem(title: "Recordings…", action: #selector(browseRecordingsClicked), keyEquivalent: "b")
         browse.target = self
         menu.addItem(browse)
+        let permissions = NSMenuItem(title: "Permissions & readiness…", action: #selector(checkPermissionsClicked), keyEquivalent: "")
+        permissions.target = self
+        menu.addItem(permissions)
         let openFolder = NSMenuItem(
             title: "Open recordings folder",
             action: #selector(openFolderClicked),
@@ -297,5 +301,6 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     @objc private func toggleClicked() { onToggle?() }
     @objc private func openFolderClicked() { onOpenFolder?() }
     @objc private func browseRecordingsClicked() { onBrowseRecordings?() }
+    @objc private func checkPermissionsClicked() { onCheckPermissions?() }
     @objc private func quitClicked() { onQuit?() }
 }

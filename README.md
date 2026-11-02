@@ -90,6 +90,19 @@ inspect its audio and files in Finder. **Choose folder…** opens another
 recordings root; choosing an individual completed recording selects it in its
 parent folder. The list and job statuses refresh while the window is open.
 
+Choose **Permissions & readiness…** in the Quill menu, or **Permissions…** in
+the recordings window, to check this app's microphone, Accessibility, Zoom
+screen access, notifications, folder operations and selected transcription
+engine. The browser also checks the selected recording's audio and folder.
+Missing capture permissions leave the app and checker available; they do not
+block browsing or transcription of existing audio.
+Checks refresh while the window is open, with buttons to open Settings or
+authorize the ElevenLabs key in Keychain. A refresh does not record, upload
+audio, or prompt for Keychain approval. System audio tap permission cannot be
+verified passively; make a short test recording and check `system.caf`.
+Readable Keychain credentials do not prove account quota or ElevenLabs
+speech-to-text permission; those are confirmed by the transcription response.
+
 To regenerate a transcript, select the recording, choose an engine and click
 **Regenerate**. The engine choice applies to this job without changing the
 default for new recordings. With ElevenLabs, matching saved responses are reused

@@ -134,13 +134,12 @@ struct Run: ParsableCommand {
         }
         let root = Config.resolveRoot(cliOverride: out)
 
-        // Non-blocking: permissions prompt on first recording, so warnings at
-        // startup are informational, not fatal.
+        // Keep the menu and permissions checker available even when capture
+        // access is denied. Existing recordings can still be transcribed.
         let checks = DoctorReport.run(recordingsRoot: root, checkKeychain: false)
         if !DoctorReport.allOK(checks) {
-            FileHandle.standardError.write(Data("startup checks failed:\n".utf8))
+            FileHandle.standardError.write(Data("startup checks need attention — open Permissions & readiness from the Quill menu:\n".utf8))
             DoctorReport.print(checks)
-            throw ExitCode(1)
         }
 
         let app = NSApplication.shared
@@ -200,6 +199,7 @@ final class AppController: NSObject, NSApplicationDelegate {
     private var session: RecordingSession?
     private var ticker: Timer?
     private var recordingsWindow: RecordingsWindowController?
+    private var permissionsWindow: PermissionsWindowController?
 
     init(root: URL) {
         self.root = root
@@ -207,6 +207,12 @@ final class AppController: NSObject, NSApplicationDelegate {
         menuBar.onToggle = { [weak self] in self?.toggle() }
         menuBar.onOpenFolder = { [weak self] in self?.openFolder() }
         menuBar.onBrowseRecordings = { [weak self] in self?.browseRecordings() }
+        menuBar.onCheckPermissions = { [weak self] in
+            guard let self else { return }
+            self.permissionsWindow?.close()
+            self.permissionsWindow = PermissionsWindowController(root: self.root)
+            self.permissionsWindow?.show()
+        }
         menuBar.onQuit = { [weak self] in self?.shutdown() }
         menuBar.update(recording: false, elapsed: nil)
         menuBar.onDetectionToggle = { [weak self] in self?.meetings.toggleEnabled() }
