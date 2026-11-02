@@ -83,12 +83,30 @@ transcription speed.
    transcript is ready.
 
 Choose **Recordings…** in the Quill menu to browse recording folders in a native
-window. The list is ordered newest first and can be searched by meeting title,
-folder name or participant. Select a recording to preview its original
+window. The sidebar groups recordings by **month/year → day**, newest first,
+with a meeting count for each group. Selecting a day shows only its recordings;
+selecting a month shows that month, and **All recordings** clears the date filter.
+The newest day is selected initially. Search applies to the selected scope and
+matches generated/original meeting titles, folder names and participants.
+Each meeting shows a compact local-time range such as **12:03–13:05 · 1h 02m**.
+Overnight meetings show a next-day marker; hovering exposes exact times.
+Select a recording to preview its original
 transcript or the optional **With names** variant, and use **Open folder** to
 inspect its audio and files in Finder. **Choose folder…** opens another
 recordings root; choosing an individual completed recording selects it in its
 parent folder. The list and job statuses refresh while the window is open.
+
+Titles are generated from meeting content when you browse recordings and saved
+separately in `recording-title.json`; original transcript headers/text remain
+unchanged. **Quill menu → Meeting titles** selects local titles, Automatic AI,
+Codex or Claude. Local titles are the default. AI modes send bounded excerpts
+from the beginning, middle and end to an already configured, signed-in text
+service and use a simple local keyword title if unavailable. Each browsed
+meeting gets a local title before the independent AI queue starts, so titling
+does not block transcription. A matching content checksum reuses an existing
+title, even after transcript metadata changes. **Refresh title** retries title
+generation without uploading audio or retranscribing the meeting. Original
+meeting titles remain searchable.
 
 Choose **Permissions & readiness…** in the Quill menu, or **Permissions…** in
 the recordings window, to check this app's microphone, Accessibility, Zoom
@@ -155,7 +173,10 @@ and archive flow continues when cleanup is off, no compatible signed-in CLI is
 available, a provider fails, output fails validation, or the run times out.
 
 This uses the installed `codex` or `claude` command-line harness and its saved
-sign-in. Installing only the ChatGPT or Claude desktop chat app is insufficient.
+sign-in. Quill also checks a compatible CLI bundled with ChatGPT/Codex desktop
+when available; installing a desktop app alone does not guarantee a ready
+helper. Incomplete standalone helpers are skipped in favor of another ready
+installation of the same provider.
 Automatic prefers a compatible signed-in harness associated with an open app;
 Codex wins a tie. Otherwise it checks Codex, then Claude Code. An explicit choice
 never falls back to the other provider, and a failed model request is not resent

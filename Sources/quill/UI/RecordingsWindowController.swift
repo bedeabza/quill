@@ -10,9 +10,28 @@ private final class RecordingRowView: NSTableRowView {
 }
 
 @MainActor
-final class RecordingsWindowController: NSWindowController, NSTableViewDataSource, NSTableViewDelegate, NSSearchFieldDelegate, NSWindowDelegate {
+private final class RecordingDateNode: NSObject {
+    let scope: RecordingCalendar.Scope
+    let label: String
+    let count: Int
+    let children: [RecordingDateNode]
+    init(scope: RecordingCalendar.Scope, label: String, count: Int, children: [RecordingDateNode] = []) {
+        self.scope = scope; self.label = label; self.count = count; self.children = children
+    }
+}
+
+@MainActor
+final class RecordingsWindowController: NSWindowController, NSTableViewDataSource, NSTableViewDelegate, NSOutlineViewDataSource, NSOutlineViewDelegate, NSSearchFieldDelegate, NSWindowDelegate {
     private var root: URL
     private let transcription: TranscriptionCoordinator
+    private let titles: RecordingTitleCoordinator
+    private var titleBusy: Set<URL> = []
+    private let dates = NSOutlineView()
+    private var dateNodes: [RecordingDateNode] = []
+    private var dateScope: RecordingCalendar.Scope?
+    private var updatingDates = false
+    private var calendarSignature: String?
+    private let dayLabel = NSTextField(labelWithString: "Recordings")
     private var entries: [RecordingEntry] = []
     private var visible: [RecordingEntry] = []
     private var activity: [URL: TranscriptionCoordinator.Activity] = [:]
@@ -36,10 +55,12 @@ final class RecordingsWindowController: NSWindowController, NSTableViewDataSourc
     private let cloudNote = NSTextField(wrappingLabelWithString: "One aligned recording with echo reduction is sent to ElevenLabs. Matching combined responses are reused. Older separate-track results need a new upload, which may be billed.")
     private let regenerateButton = NSButton(title: "Regenerate", target: nil, action: nil)
     private let openButton = NSButton(title: "Open folder", target: nil, action: nil)
+    private let titleButton = NSButton(title: "Generate title", target: nil, action: nil)
 
-    init(root: URL, transcription: TranscriptionCoordinator) {
+    init(root: URL, transcription: TranscriptionCoordinator, titles: RecordingTitleCoordinator = .shared) {
         self.root = RecordingsLibrary.canonicalDirectory(root)
         self.transcription = transcription
+        self.titles = titles
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1040, height: 720),
             styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
         window.title = "Quill Recordings"
@@ -73,6 +94,8 @@ final class RecordingsWindowController: NSWindowController, NSTableViewDataSourc
         let permissions = NSButton(title: "Permissions…", target: self, action: #selector(checkPermissions))
         choose.setContentHuggingPriority(.required, for: .horizontal)
         refresh.setContentHuggingPriority(.required, for: .horizontal)
+        permissions.setContentHuggingPriority(.required, for: .horizontal)
+        rootLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
         rootLabel.lineBreakMode = .byTruncatingMiddle
         rootLabel.textColor = .secondaryLabelColor
         let header = NSStackView(views: [rootLabel, choose, permissions, refresh])
@@ -82,11 +105,20 @@ final class RecordingsWindowController: NSWindowController, NSTableViewDataSourc
 
         search.placeholderString = "Search recordings or participants"
         search.delegate = self
+        let dateColumn = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("dates"))
+        dates.addTableColumn(dateColumn); dates.outlineTableColumn = dateColumn
+        dates.headerView = nil; dates.rowHeight = 27; dates.indentationPerLevel = 12; dates.style = .sourceList
+        dates.dataSource = self; dates.delegate = self
+        dates.setAccessibilityLabel("Recording months and days")
+        let dateScroll = NSScrollView(); dateScroll.documentView = dates; dateScroll.hasVerticalScroller = true
+        dateScroll.heightAnchor.constraint(equalToConstant: 190).isActive = true
+        dayLabel.font = .systemFont(ofSize: 12, weight: .semibold)
+        dayLabel.lineBreakMode = .byTruncatingTail
         let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("recording"))
         column.resizingMask = .autoresizingMask
         table.addTableColumn(column)
         table.headerView = nil
-        table.rowHeight = 62
+        table.rowHeight = 64
         table.style = .sourceList
         table.dataSource = self
         table.delegate = self
@@ -96,16 +128,21 @@ final class RecordingsWindowController: NSWindowController, NSTableViewDataSourc
         let listScroll = NSScrollView()
         listScroll.documentView = table
         listScroll.hasVerticalScroller = true
-        let sidebar = NSStackView(views: [search, listScroll])
+        let sidebar = NSStackView(views: [search, dateScroll, dayLabel, listScroll])
         sidebar.orientation = .vertical
         sidebar.distribution = .fill
         sidebar.alignment = .leading
         sidebar.spacing = 10
         sidebar.widthAnchor.constraint(equalToConstant: 270).isActive = true
-        for view in [search, listScroll] { view.widthAnchor.constraint(equalTo: sidebar.widthAnchor).isActive = true }
+        for view in [search, dateScroll, dayLabel, listScroll] { view.widthAnchor.constraint(equalTo: sidebar.widthAnchor).isActive = true }
 
         titleLabel.font = .systemFont(ofSize: 20, weight: .semibold)
         titleLabel.lineBreakMode = .byTruncatingTail
+        titleLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        titleButton.target = self; titleButton.action = #selector(generateTitle)
+        titleButton.font = .systemFont(ofSize: 11)
+        titleButton.setContentHuggingPriority(.required, for: .horizontal)
+        let titleRow = NSStackView(views: [titleLabel, titleButton]); titleRow.distribution = .fill; titleRow.spacing = 8
         detailLabel.font = .systemFont(ofSize: 12)
         detailLabel.textColor = .secondaryLabelColor
         detailLabel.maximumNumberOfLines = 2
@@ -151,13 +188,13 @@ final class RecordingsWindowController: NSWindowController, NSTableViewDataSourc
         transcriptScroll.borderType = .bezelBorder
         transcriptScroll.documentView = preview
         transcriptScroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 160).isActive = true
-        let detail = NSStackView(views: [titleLabel, detailLabel, tools, actions, fresh, cloudNote, backupNote, statusLabel, transcriptScroll])
+        let detail = NSStackView(views: [titleRow, detailLabel, tools, actions, fresh, cloudNote, backupNote, statusLabel, transcriptScroll])
         detail.orientation = .vertical
         detail.distribution = .fill
         detail.detachesHiddenViews = true
         detail.alignment = .leading
         detail.spacing = 10
-        for view in [titleLabel, detailLabel, tools, actions, cloudNote, backupNote, statusLabel, transcriptScroll] {
+        for view in [titleRow, detailLabel, tools, actions, cloudNote, backupNote, statusLabel, transcriptScroll] {
             view.widthAnchor.constraint(equalTo: detail.widthAnchor).isActive = true
         }
         let body = NSStackView(views: [sidebar, detail])
@@ -187,22 +224,26 @@ final class RecordingsWindowController: NSWindowController, NSTableViewDataSourc
         guard refreshTask == nil else { return }
         let requestedRoot = root
         let selected = selectedEntry?.directory
-        refreshTask = Task { [weak self, transcription] in
+        refreshTask = Task { [weak self, transcription, titles] in
             let states = await transcription.activity()
+            let titleStates = await titles.busy()
             let result = await Task.detached(priority: .utility) { Result { try RecordingsLibrary.entries(in: requestedRoot) } }.value
             guard let self else { return }
             self.refreshTask = nil
             guard self.root == requestedRoot else { self.refresh(); return }
             self.activity = states
+            self.titleBusy = titleStates
             self.rootLabel.stringValue = requestedRoot.path
             switch result {
             case .success(let rows):
                 self.entries = rows
+                self.rebuildDates(selecting: self.preferredSelection)
                 // Respect a selection made while the directory scan was running.
                 self.filterEntries(selecting: self.preferredSelection ?? self.selectedEntry?.directory ?? selected)
                 self.preferredSelection = nil
             case .failure(let error):
                 self.entries = []
+                self.rebuildDates(selecting: nil)
                 self.filterEntries(selecting: nil)
                 self.statusLabel.stringValue = "Could not read this folder: \(error)"
             }
@@ -214,14 +255,95 @@ final class RecordingsWindowController: NSWindowController, NSTableViewDataSourc
     }
     private var selectedEngine: TranscriptionEngineKind { TranscriptionEngineKind.allCases[max(0, engine.indexOfSelectedItem)] }
 
+    private func dateLabel(_ date: Date, format: String) -> String {
+        let formatter = DateFormatter(); formatter.setLocalizedDateFormatFromTemplate(format)
+        return formatter.string(from: date)
+    }
+    private func exactTiming(_ entry: RecordingEntry) -> String {
+        let formatter = DateFormatter(); formatter.dateStyle = .medium; formatter.timeStyle = .medium
+        return formatter.string(from: entry.startedAt) + " → " + (entry.endedAt.map { formatter.string(from: $0) } ?? "End unavailable")
+    }
+    private func rebuildDates(selecting directory: URL?) {
+        let signature = Calendar.autoupdatingCurrent.timeZone.identifier + Locale.autoupdatingCurrent.identifier
+            + entries.map { $0.directory.path + ":\($0.startedAt.timeIntervalSince1970)" }.joined(separator: "|")
+        guard directory != nil || calendarSignature != signature else { return }
+        calendarSignature = signature
+        let expanded = Set(dateNodes.filter { dates.isItemExpanded($0) }.map(\.scope))
+        let months = RecordingCalendar.months(entries)
+        if let directory, let entry = entries.first(where: { $0.directory == directory }) {
+            dateScope = .day(Calendar.autoupdatingCurrent.startOfDay(for: entry.startedAt))
+        }
+        dateNodes = [RecordingDateNode(scope: .all, label: "All recordings", count: entries.count)] + months.map { month in
+            RecordingDateNode(scope: .month(month.date), label: dateLabel(month.date, format: "MMMM yyyy"), count: month.count,
+                children: month.days.map { RecordingDateNode(scope: .day($0.date), label: dateLabel($0.date, format: "EEEE d"), count: $0.count) })
+        }
+        let all = dateNodes + dateNodes.flatMap(\.children)
+        if dateScope == nil || !all.contains(where: { $0.scope == dateScope }) {
+            dateScope = months.first?.days.first.map { .day($0.date) } ?? .all
+        }
+        updatingDates = true
+        defer { updatingDates = false }
+        dates.reloadData()
+        for node in dateNodes where !node.children.isEmpty {
+            if expanded.contains(node.scope) || node.children.contains(where: { $0.scope == dateScope }) { dates.expandItem(node) }
+        }
+        if let selected = all.first(where: { $0.scope == dateScope }), dates.row(forItem: selected) >= 0 {
+            dates.selectRowIndexes(IndexSet(integer: dates.row(forItem: selected)), byExtendingSelection: false)
+        }
+    }
+    func outlineView(_ outlineView: NSOutlineView, numberOfChildrenOfItem item: Any?) -> Int {
+        (item as? RecordingDateNode)?.children.count ?? dateNodes.count
+    }
+    func outlineView(_ outlineView: NSOutlineView, child index: Int, ofItem item: Any?) -> Any {
+        ((item as? RecordingDateNode)?.children ?? dateNodes)[index]
+    }
+    func outlineView(_ outlineView: NSOutlineView, isItemExpandable item: Any) -> Bool { !(item as! RecordingDateNode).children.isEmpty }
+    func outlineView(_ outlineView: NSOutlineView, rowViewForItem item: Any) -> NSTableRowView? { RecordingRowView() }
+    func outlineView(_ outlineView: NSOutlineView, viewFor tableColumn: NSTableColumn?, item: Any) -> NSView? {
+        guard let node = item as? RecordingDateNode else { return nil }
+        let identifier = NSUserInterfaceItemIdentifier("RecordingDate")
+        let cell = outlineView.makeView(withIdentifier: identifier, owner: self) as? NSTableCellView ?? NSTableCellView()
+        if cell.textField == nil {
+            cell.identifier = identifier
+            let label = NSTextField(labelWithString: ""); label.lineBreakMode = .byTruncatingTail
+            cell.addSubview(label); cell.textField = label; label.translatesAutoresizingMaskIntoConstraints = false
+            NSLayoutConstraint.activate([label.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 2),
+                label.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -4), label.centerYAnchor.constraint(equalTo: cell.centerYAnchor)])
+        }
+        cell.textField?.stringValue = node.label + "  ·  \(node.count)"
+        cell.textField?.font = .systemFont(ofSize: 12, weight: node.children.isEmpty ? .regular : .semibold)
+        return cell
+    }
+    func outlineViewSelectionDidChange(_ notification: Notification) {
+        guard !updatingDates, let node = dates.item(atRow: dates.selectedRow) as? RecordingDateNode else { return }
+        dateScope = node.scope
+        if !node.children.isEmpty { dates.expandItem(node) }
+        filterEntries(selecting: nil)
+    }
+
     private func filterEntries(selecting directory: URL?) {
         let query = search.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        visible = entries.filter { query.isEmpty || ([$0.title, $0.directory.lastPathComponent] + $0.participants).joined(separator: " ").localizedCaseInsensitiveContains(query) }
+        visible = entries.filter {
+            RecordingCalendar.includes($0, scope: dateScope ?? .all)
+                && (query.isEmpty || ([$0.title, $0.originalTitle ?? "", $0.directory.lastPathComponent] + $0.participants).joined(separator: " ").localizedCaseInsensitiveContains(query))
+        }
+        let scopeName: String
+        switch dateScope ?? .all {
+        case .all: scopeName = "All recordings"; search.placeholderString = "Search all recordings"
+        case .month(let date): scopeName = dateLabel(date, format: "MMMM yyyy"); search.placeholderString = "Search this month"
+        case .day(let date): scopeName = dateLabel(date, format: "EEE, d MMM"); search.placeholderString = "Search this day"
+        }
+        dayLabel.stringValue = scopeName + " · \(visible.count)"
         table.reloadData()
         if let index = visible.firstIndex(where: { $0.directory == directory }) ?? (visible.isEmpty ? nil : 0) {
             table.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: false)
         } else { table.deselectAll(nil) }
         updateSelection()
+        let candidates = visible.filter { entry in
+            guard entry.hasTranscript else { return false }
+            switch activity[entry.directory] { case .queued, .processing: return false; default: return true }
+        }.map(\.directory)
+        Task { [titles] in await titles.enqueue(candidates) }
     }
 
     func numberOfRows(in tableView: NSTableView) -> Int { visible.count }
@@ -233,6 +355,8 @@ final class RecordingsWindowController: NSWindowController, NSTableViewDataSourc
             cell.identifier = identifier
             let title = NSTextField(labelWithString: "")
             title.lineBreakMode = .byTruncatingTail
+            title.maximumNumberOfLines = 2; title.cell?.wraps = true
+            title.font = .systemFont(ofSize: 13, weight: .medium)
             let subtitle = NSTextField(labelWithString: "")
             subtitle.tag = 2
             subtitle.font = .systemFont(ofSize: 11)
@@ -244,19 +368,24 @@ final class RecordingsWindowController: NSWindowController, NSTableViewDataSourc
             subtitle.translatesAutoresizingMaskIntoConstraints = false
             NSLayoutConstraint.activate([
                 title.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 8), title.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -8),
-                title.topAnchor.constraint(equalTo: cell.topAnchor, constant: 10),
+                title.topAnchor.constraint(equalTo: cell.topAnchor, constant: 8),
                 subtitle.leadingAnchor.constraint(equalTo: title.leadingAnchor), subtitle.trailingAnchor.constraint(equalTo: title.trailingAnchor),
-                subtitle.topAnchor.constraint(equalTo: title.bottomAnchor, constant: 4)
+                subtitle.bottomAnchor.constraint(equalTo: cell.bottomAnchor, constant: -8),
+                title.bottomAnchor.constraint(lessThanOrEqualTo: subtitle.topAnchor, constant: -4)
             ])
         }
         let entry = visible[row]
         cell.textField?.stringValue = entry.title
-        let date = DateFormatter.localizedString(from: entry.startedAt, dateStyle: .short, timeStyle: .short)
-        (cell.viewWithTag(2) as? NSTextField)?.stringValue = date + " · " + shortStatus(entry)
+        let prefix: String
+        if case .day = dateScope ?? .all { prefix = "" } else { prefix = dateLabel(entry.startedAt, format: "d MMM") + " · " }
+        (cell.viewWithTag(2) as? NSTextField)?.stringValue = prefix + RecordingCalendar.compactTiming(entry) + " · " + shortStatus(entry)
+        cell.toolTip = entry.title + "\n" + exactTiming(entry)
         return cell
     }
 
-    func tableViewSelectionDidChange(_ notification: Notification) { updateSelection() }
+    func tableViewSelectionDidChange(_ notification: Notification) {
+        guard (notification.object as? NSTableView) === table else { return }; updateSelection()
+    }
     func controlTextDidChange(_ obj: Notification) { filterEntries(selecting: selectedEntry?.directory) }
 
     private func shortStatus(_ entry: RecordingEntry) -> String {
@@ -271,11 +400,16 @@ final class RecordingsWindowController: NSWindowController, NSTableViewDataSourc
     private func updateSelection() {
         let entry = selectedEntry
         titleLabel.stringValue = entry?.title ?? (entries.isEmpty ? "No recordings yet" : "No matching recordings")
+        titleLabel.toolTip = entry?.title
+        let titleRunning = entry.map { titleBusy.contains($0.directory) } ?? false
+        titleButton.title = titleRunning ? "Generating…" : entry?.titleSource == nil ? "Generate title" : "Refresh title"
+        titleButton.isEnabled = entry?.hasTranscript == true && !titleRunning
+        titleButton.toolTip = "Creates a title from the meeting content. AI title modes send transcript excerpts to your configured text service; originals are preserved."
         detailLabel.stringValue = entry.map {
-            let date = DateFormatter.localizedString(from: $0.startedAt, dateStyle: .medium, timeStyle: .short)
-            let duration = $0.duration.map { " · \($0 / 60)m \($0 % 60)s" } ?? ""
-            return date + duration + "\n" + ($0.participants.isEmpty ? "Participants not recorded" : $0.participants.joined(separator: ", "))
+            let date = DateFormatter.localizedString(from: $0.startedAt, dateStyle: .medium, timeStyle: .none)
+            return date + " · " + RecordingCalendar.compactTiming($0) + "\n" + ($0.participants.isEmpty ? "Participants not recorded" : $0.participants.joined(separator: ", "))
         } ?? "Choose a recordings folder or start a recording from the Quill menu."
+        detailLabel.toolTip = entry.map(exactTiming)
         let busy: Bool
         switch entry.flatMap({ activity[$0.directory] }) {
         case .queued:
@@ -307,7 +441,9 @@ final class RecordingsWindowController: NSWindowController, NSTableViewDataSourc
             let values = try? entry.directory.appendingPathComponent(base + "." + ext).resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey])
             return "\(values?.contentModificationDate?.timeIntervalSince1970 ?? 0):\(values?.fileSize ?? 0)"
         }.joined(separator: ":")
-        let signature = entry.directory.path + "/" + base + "/" + stamps
+        let contentSignature = entry.directory.path + "/" + base + "/" + stamps + "/"
+        let preservePosition = previewSignature?.hasPrefix(contentSignature) == true
+        let signature = contentSignature + entry.title
         guard signature != previewSignature else { return }
         previewSignature = signature
         previewTask?.cancel()
@@ -319,13 +455,24 @@ final class RecordingsWindowController: NSWindowController, NSTableViewDataSourc
             }.value
             guard let self, self.previewRequest == request else { return }
             if self.preview.string != text {
+                let origin = self.preview.enclosingScrollView?.contentView.bounds.origin
                 self.preview.string = text
-                self.preview.scrollRangeToVisible(NSRange(location: 0, length: 0))
+                if preservePosition, let origin, let scroll = self.preview.enclosingScrollView {
+                    scroll.contentView.scroll(to: origin); scroll.reflectScrolledClipView(scroll.contentView)
+                } else { self.preview.scrollRangeToVisible(NSRange(location: 0, length: 0)) }
             }
         }
     }
 
     @objc private func refreshClicked() { refresh() }
+    @objc private func generateTitle() {
+        guard let entry = selectedEntry, titleButton.isEnabled else { return }
+        titleButton.isEnabled = false; titleButton.title = "Generating…"
+        Task { [weak self, titles] in
+            await titles.enqueue([entry.directory], force: true)
+            self?.refresh()
+        }
+    }
     @objc private func variantChanged() { updateSelection() }
     @objc private func engineChanged() { updateSelection() }
     @objc private func openFolder() { if let entry = selectedEntry { NSWorkspace.shared.open(entry.directory) } }
@@ -354,6 +501,7 @@ final class RecordingsWindowController: NSWindowController, NSTableViewDataSourc
                 self.preferredSelection = nil
             }
             self.search.stringValue = ""
+            self.dateScope = nil
             self.refresh()
         }
     }

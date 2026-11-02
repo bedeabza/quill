@@ -15,6 +15,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     private let detectionToggle = NSMenuItem(title: "Automatic meeting recording", action: #selector(detectionClicked), keyEquivalent: "")
     private let permissionItem = NSMenuItem(title: "Allow meeting detection...", action: #selector(permissionClicked), keyEquivalent: "")
     private var postProcessingItems: [NSMenuItem] = []
+    private var titleModeItems: [NSMenuItem] = []
     private var engineItems: [NSMenuItem] = []
     private let voiceMemoryItem = NSMenuItem(title: "Remember speaker voices", action: #selector(voiceMemoryClicked), keyEquivalent: "")
     private let apiKeyItem = NSMenuItem(title: "ElevenLabs API key...", action: #selector(apiKeyClicked), keyEquivalent: "")
@@ -99,6 +100,16 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         }
         cleanup.submenu = cleanupMenu
         menu.addItem(cleanup)
+
+        let titles = NSMenuItem(title: "Meeting titles", action: nil, keyEquivalent: "")
+        let titleMenu = NSMenu(); titleMenu.autoenablesItems = false
+        for (index, label) in ["Local titles", "Automatic AI", "Codex (ChatGPT account)", "Claude Code"].enumerated() {
+            let item = NSMenuItem(title: label, action: #selector(titleModeClicked(_:)), keyEquivalent: "")
+            item.tag = index; item.target = self
+            item.toolTip = index == 0 ? "Creates simple titles from transcript keywords on this Mac." : "Sends transcript excerpts to the selected text service. Uses a local title when unavailable."
+            titleModeItems.append(item); titleMenu.addItem(item)
+        }
+        titles.submenu = titleMenu; menu.addItem(titles)
 
         let browse = NSMenuItem(title: "Recordings…", action: #selector(browseRecordingsClicked), keyEquivalent: "b")
         browse.target = self
@@ -188,6 +199,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         for item in postProcessingItems {
             item.state = PostProcessingMode.allCases[item.tag] == selected ? .on : .off
         }
+        for item in titleModeItems { item.state = PostProcessingMode.allCases[item.tag] == Config.recordingTitleMode() ? .on : .off }
     }
 
     @objc private func engineClicked(_ sender: NSMenuItem) {
@@ -270,6 +282,13 @@ final class MenuBarController: NSObject, NSMenuDelegate {
             return
         }
         for item in postProcessingItems { item.state = item === sender ? .on : .off }
+    }
+
+    @objc private func titleModeClicked(_ sender: NSMenuItem) {
+        guard Config.setRecordingTitleMode(PostProcessingMode.allCases[sender.tag]) else {
+            notifyUser(title: "Quill titles", body: "Could not save the title setting."); return
+        }
+        for item in titleModeItems { item.state = item === sender ? .on : .off }
     }
 
     @objc private func detectionClicked() { onDetectionToggle?() }

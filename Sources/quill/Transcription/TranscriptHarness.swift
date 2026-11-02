@@ -28,16 +28,29 @@ struct TranscriptHarness: Sendable {
     let executable: URL
 
     static func find(_ kind: PostProcessingMode, searchPaths: [String]? = nil) -> TranscriptHarness? {
-        guard kind == .codex || kind == .claude else { return nil }
+        candidates(kind, searchPaths: searchPaths).first
+    }
+
+    static func candidates(_ kind: PostProcessingMode, searchPaths: [String]? = nil) -> [TranscriptHarness] {
+        guard kind == .codex || kind == .claude else { return [] }
         let fm = FileManager.default
         let home = fm.homeDirectoryForCurrentUser.path
         let paths = searchPaths ?? [home + "/.local/bin", "/opt/homebrew/bin", "/usr/local/bin"]
             + (ProcessInfo.processInfo.environment["PATH"] ?? "").split(separator: ":").map(String.init)
-        for path in paths where path.hasPrefix("/") {
-            let executable = URL(fileURLWithPath: path).appendingPathComponent(kind.rawValue)
-            if fm.isExecutableFile(atPath: executable.path) { return TranscriptHarness(kind: kind, executable: executable) }
+        var executables = paths.filter { $0.hasPrefix("/") }.map { URL(fileURLWithPath: $0).appendingPathComponent(kind.rawValue) }
+        if kind == .codex, searchPaths == nil {
+            // Desktop bundles may supply a working CLI while an unrelated npm
+            // shim is incomplete. No installation or repair is performed.
+            for root in ["/Applications", home + "/Applications"] {
+                for app in ["ChatGPT", "Codex"] {
+                    executables.append(URL(fileURLWithPath: root + "/" + app + ".app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex"))
+                    executables.append(URL(fileURLWithPath: root + "/" + app + ".app/Contents/Resources/codex"))
+                }
+            }
         }
-        return nil
+        var seen: Set<String> = []
+        return executables.filter { seen.insert($0.path).inserted && fm.isExecutableFile(atPath: $0.path) }
+            .map { TranscriptHarness(kind: kind, executable: $0) }
     }
 
     static func preference(mode: PostProcessingMode, activeApps: [String]) -> [PostProcessingMode] {
@@ -47,12 +60,14 @@ struct TranscriptHarness: Sendable {
         return claudeActive && !codexActive ? [.claude, .codex] : [.codex, .claude]
     }
 
-    static func select(mode: PostProcessingMode, directory: URL) async -> TranscriptHarness? {
+    static func select(mode: PostProcessingMode, directory: URL, searchPaths: [String]? = nil) async -> TranscriptHarness? {
         let apps = await MainActor.run {
             NSWorkspace.shared.runningApplications.compactMap(\.bundleIdentifier)
         }
         for kind in preference(mode: mode, activeApps: apps) {
-            if let harness = find(kind), await harness.isReady(directory: directory) { return harness }
+            for harness in candidates(kind, searchPaths: searchPaths) {
+                if await harness.isReady(directory: directory) { return harness }
+            }
         }
         return nil
     }
