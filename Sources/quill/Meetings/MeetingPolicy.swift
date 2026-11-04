@@ -4,6 +4,8 @@ struct DetectedMeeting: Equatable, Sendable {
     let id: String
     let app: String
     let service: String
+    var title: String? = nil
+    var roomCode: String? = nil
 }
 
 enum MeetingObservation: Equatable, Sendable {

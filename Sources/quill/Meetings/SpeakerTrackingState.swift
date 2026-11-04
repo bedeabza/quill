@@ -4,9 +4,14 @@ import Foundation
 /// outside recordings. Only a fresh roster may seed a newly started recording.
 struct SpeakerTrackingState {
     private(set) var meetingIDs: [String] = []
+    private(set) var meetings: [String: DetectedMeeting] = [:]
     private var rosters: [String: SpeakerObservation] = [:]
 
     mutating func update(_ observations: [String: MeetingObservation], at now: Double) {
+        meetings = observations.compactMapValues { state in
+            if case .present(let meeting) = state { return meeting }
+            return nil
+        }
         meetingIDs = observations.compactMap { id, state in
             if case .present = state { return id }
             return nil

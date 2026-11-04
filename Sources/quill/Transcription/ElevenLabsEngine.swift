@@ -4,6 +4,8 @@ import Foundation
 
 /// Cloud transcription through Scribe v2, preserving original track clocks.
 actor ElevenLabsEngine: TranscriptionEngine {
+    /// Version 1 was requested with diarize=false and cannot supply speakers.
+    static let cacheVersion = 2
     private static let requestTimeout: TimeInterval = 300
     nonisolated let name = TranscriptionEngineKind.elevenLabs.rawValue
     nonisolated let model = "scribe_v2"
@@ -40,7 +42,7 @@ actor ElevenLabsEngine: TranscriptionEngine {
         let fingerprint = try Self.fingerprint(audio)
         let cacheURL = audio.deletingLastPathComponent().appendingPathComponent("elevenlabs-\(audio.lastPathComponent).json")
         if let cache = try? JSONDecoder().decode(Cache.self, from: Data(contentsOf: cacheURL)),
-           cache.version == 1, cache.model == model, cache.audioSHA256 == fingerprint {
+           cache.version == Self.cacheVersion, cache.model == model, cache.audioSHA256 == fingerprint {
             return try Self.segments(cache.response)
         }
         let probe = try AVAudioFile(forReading: audio)
@@ -74,7 +76,7 @@ actor ElevenLabsEngine: TranscriptionEngine {
         do { decoded = try JSONDecoder().decode(Response.self, from: data) }
         catch { throw TranscriptionFailure("ElevenLabs returned a malformed transcript.") }
         let segments = try Self.segments(decoded)
-        let cache = Cache(version: 1, model: model, audioSHA256: fingerprint, response: decoded)
+        let cache = Cache(version: Self.cacheVersion, model: model, audioSHA256: fingerprint, response: decoded)
         let encoded = try JSONEncoder().encode(cache)
         try encoded.write(to: cacheURL, options: .atomic)
         try fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: cacheURL.path)
@@ -89,6 +91,7 @@ actor ElevenLabsEngine: TranscriptionEngine {
             let start: Double?
             let end: Double?
             let type: String
+            var speaker_id: String? = nil
         }
         let language_code: String
         let language_probability: Double?
@@ -133,7 +136,7 @@ actor ElevenLabsEngine: TranscriptionEngine {
         let destination = try FileHandle(forWritingTo: output)
         let input = try FileHandle(forReadingFrom: audio)
         defer { try? destination.close(); try? input.close() }
-        for (name, value) in [("model_id", "scribe_v2"), ("diarize", "false"), ("tag_audio_events", "false"),
+        for (name, value) in [("model_id", "scribe_v2"), ("diarize", "true"), ("tag_audio_events", "false"),
                               ("timestamps_granularity", "word"), ("webhook", "false")] {
             try destination.write(contentsOf: Data("--\(boundary)\r\nContent-Disposition: form-data; name=\"\(name)\"\r\n\r\n\(value)\r\n".utf8))
         }
@@ -145,10 +148,11 @@ actor ElevenLabsEngine: TranscriptionEngine {
     nonisolated static func segments(_ response: Response) throws -> [TranscriptSegment] {
         var result: [TranscriptSegment] = []
         var words: [TranscriptWord] = []
+        var speakerID: String?
         var previousStart = 0.0
         func flush() {
             guard let first = words.first, let last = words.last else { return }
-            result.append(TranscriptSegment(start: first.start, end: last.end, text: words.map(\.text).joined(separator: " "), words: words))
+            result.append(TranscriptSegment(start: first.start, end: last.end, text: words.map(\.text).joined(separator: " "), words: words, speakerID: speakerID))
             words = []
         }
         for word in response.words where word.type == "word" {
@@ -159,7 +163,8 @@ actor ElevenLabsEngine: TranscriptionEngine {
             previousStart = start
             let text = word.text.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !text.isEmpty else { continue }
-            if let last = words.last, start - last.end > 1 { flush() }
+            if let last = words.last, start - last.end > 1 || word.speaker_id != speakerID { flush() }
+            speakerID = word.speaker_id
             words.append(TranscriptWord(start: start, end: end, text: text))
             if text.hasSuffix(".") || text.hasSuffix("?") || text.hasSuffix("!") || words.count >= 60 { flush() }
         }

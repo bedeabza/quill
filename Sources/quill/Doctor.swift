@@ -2,13 +2,13 @@ import AVFoundation
 import FluidAudio
 import Foundation
 
-enum CheckStatus {
+enum CheckStatus: Sendable {
     case ok
     case warn(String)
     case fail(String)
 }
 
-struct Check {
+struct Check: Sendable {
     let name: String
     let status: CheckStatus
     let remediation: String?
@@ -99,6 +99,10 @@ enum DoctorReport {
             return Check(name: "transcription", status: saved ? .ok : .warn("ElevenLabs API key not saved"),
                          remediation: saved ? nil : "Quill menu > ElevenLabs API key...; recordings are retained until transcription is available")
         }
+        return checkLocalModel()
+    }
+
+    static func checkLocalModel() -> Check {
         let cache = AsrModels.defaultCacheDirectory(for: ParakeetEngine.modelVersion)
         if AsrModels.modelsExist(at: cache, version: ParakeetEngine.modelVersion) {
             return Check(name: "transcription", status: .ok, remediation: nil)

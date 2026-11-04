@@ -28,6 +28,7 @@ def main():
         resources = app / "Contents/Resources"
         executable.parent.mkdir(parents=True)
         resources.mkdir()
+        shutil.copy2(repo / "THIRD-PARTY-NOTICES.txt", resources / "THIRD-PARTY-NOTICES.txt")
         shutil.copy2(args.binary, executable)
         executable.chmod(0o755)
         info = plistlib.loads((repo / "Sources/quill/Info.plist").read_bytes())

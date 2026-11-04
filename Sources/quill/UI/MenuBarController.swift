@@ -2,7 +2,8 @@ import AppKit
 
 /// Status bar item in the top-right of the menu bar. Shows recording state at
 /// a glance and provides the only persistent control surface for the daemon
-/// (since we run as `.accessory` — no dock icon, no main window).
+/// and opens the on-demand recordings browser. The daemon runs as `.accessory`
+/// without a dock icon.
 @MainActor
 final class MenuBarController: NSObject, NSMenuDelegate {
     private let keychain: ElevenLabsKeychain
@@ -14,6 +15,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     private let detectionToggle = NSMenuItem(title: "Automatic meeting recording", action: #selector(detectionClicked), keyEquivalent: "")
     private let permissionItem = NSMenuItem(title: "Allow meeting detection...", action: #selector(permissionClicked), keyEquivalent: "")
     private var postProcessingItems: [NSMenuItem] = []
+    private var titleModeItems: [NSMenuItem] = []
     private var engineItems: [NSMenuItem] = []
     private let voiceMemoryItem = NSMenuItem(title: "Remember speaker voices", action: #selector(voiceMemoryClicked), keyEquivalent: "")
     private let apiKeyItem = NSMenuItem(title: "ElevenLabs API key...", action: #selector(apiKeyClicked), keyEquivalent: "")
@@ -25,6 +27,8 @@ final class MenuBarController: NSObject, NSMenuDelegate {
 
     var onToggle: (() -> Void)?
     var onOpenFolder: (() -> Void)?
+    var onBrowseRecordings: (() -> Void)?
+    var onCheckPermissions: (() -> Void)?
     var onQuit: (() -> Void)?
     var onDetectionToggle: (() -> Void)?
     var onPermission: (() -> Void)?
@@ -97,6 +101,22 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         cleanup.submenu = cleanupMenu
         menu.addItem(cleanup)
 
+        let titles = NSMenuItem(title: "Meeting titles", action: nil, keyEquivalent: "")
+        let titleMenu = NSMenu(); titleMenu.autoenablesItems = false
+        for (index, label) in ["Local titles", "Automatic AI", "Codex (ChatGPT account)", "Claude Code"].enumerated() {
+            let item = NSMenuItem(title: label, action: #selector(titleModeClicked(_:)), keyEquivalent: "")
+            item.tag = index; item.target = self
+            item.toolTip = index == 0 ? "Creates simple titles from transcript keywords on this Mac." : "Sends transcript excerpts to the selected text service. Uses a local title when unavailable."
+            titleModeItems.append(item); titleMenu.addItem(item)
+        }
+        titles.submenu = titleMenu; menu.addItem(titles)
+
+        let browse = NSMenuItem(title: "Recordings…", action: #selector(browseRecordingsClicked), keyEquivalent: "b")
+        browse.target = self
+        menu.addItem(browse)
+        let permissions = NSMenuItem(title: "Permissions & readiness…", action: #selector(checkPermissionsClicked), keyEquivalent: "")
+        permissions.target = self
+        menu.addItem(permissions)
         let openFolder = NSMenuItem(
             title: "Open recordings folder",
             action: #selector(openFolderClicked),
@@ -179,6 +199,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         for item in postProcessingItems {
             item.state = PostProcessingMode.allCases[item.tag] == selected ? .on : .off
         }
+        for item in titleModeItems { item.state = PostProcessingMode.allCases[item.tag] == Config.recordingTitleMode() ? .on : .off }
     }
 
     @objc private func engineClicked(_ sender: NSMenuItem) {
@@ -263,6 +284,13 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         for item in postProcessingItems { item.state = item === sender ? .on : .off }
     }
 
+    @objc private func titleModeClicked(_ sender: NSMenuItem) {
+        guard Config.setRecordingTitleMode(PostProcessingMode.allCases[sender.tag]) else {
+            notifyUser(title: "Quill titles", body: "Could not save the title setting."); return
+        }
+        for item in titleModeItems { item.state = item === sender ? .on : .off }
+    }
+
     @objc private func detectionClicked() { onDetectionToggle?() }
     @objc private func permissionClicked() { onPermission?() }
     @objc private func keepClicked() { onKeepRecording?() }
@@ -291,5 +319,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
 
     @objc private func toggleClicked() { onToggle?() }
     @objc private func openFolderClicked() { onOpenFolder?() }
+    @objc private func browseRecordingsClicked() { onBrowseRecordings?() }
+    @objc private func checkPermissionsClicked() { onCheckPermissions?() }
     @objc private func quitClicked() { onQuit?() }
 }

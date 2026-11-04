@@ -15,6 +15,31 @@ struct MeetingEndState {
 }
 
 enum MeetingEvidence {
+    /// Titles are taken only from an already identified meeting's own surface.
+    /// Generic app names, URLs and room codes are not meeting subjects.
+    static func title(candidates: [String], service: String) -> String? {
+        for candidate in candidates {
+            var title = candidate.components(separatedBy: .controlCharacters).joined(separator: " ")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let separators = [" - ", " – ", " — ", " | "]
+            let prefixes = separators.flatMap { ["Google Meet" + $0, "Meet" + $0] }
+                + ["Meeting:", "Meeting title:", "Meeting name:", "Meeting topic:"]
+            for prefix in prefixes {
+                if title.lowercased().hasPrefix(prefix.lowercased()) { title = String(title.dropFirst(prefix.count)) }
+            }
+            for suffix in separators.flatMap({ separator in ["Google Meet", "Microsoft Teams", "Zoom", "Slack"].map { separator + $0 } }) {
+                if title.lowercased().hasSuffix(suffix.lowercased()) { title = String(title.dropLast(suffix.count)) }
+            }
+            title = title.trimmingCharacters(in: .whitespacesAndNewlines)
+            let generic = [service.lowercased(), "meet", "google meet", "microsoft teams", "teams", "zoom", "zoom meeting", "slack", "huddle", "web content"]
+            guard !title.isEmpty, title.count <= 500, !generic.contains(title.lowercased()),
+                  !title.contains("://"),
+                  title.range(of: "^[a-z]{3}-[a-z]{4}-[a-z]{3}$", options: [.regularExpression, .caseInsensitive]) == nil else { continue }
+            return title
+        }
+        return nil
+    }
+
     static func nativeService(bundleID: String) -> String? {
         switch bundleID.lowercased() {
         case "us.zoom.xos": return "Zoom"

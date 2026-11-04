@@ -20,6 +20,9 @@ struct SpeakerObservation: Codable, Sendable {
     var participants: [RosterMember]? = nil
     var participant_count: Int? = nil
     var roster_complete: Bool? = nil
+    /// Kept separate so legacy remote-track attribution never consumes self
+    /// indicators. Combined recordings may use them in local-only audio.
+    var local_names: [String]? = nil
 }
 
 struct SpeakerIdentity: Codable, Equatable, Sendable {

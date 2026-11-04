@@ -24,6 +24,8 @@ struct TranscriptSegment: Sendable {
     let end: TimeInterval
     let text: String
     var words: [TranscriptWord] = []
+    /// Provider speaker ID, scoped to this audio track. Nil for local ASR.
+    var speakerID: String? = nil
 }
 
 struct TranscriptWord: Sendable {

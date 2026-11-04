@@ -51,6 +51,11 @@ struct SpeakerMemoryLearn: ParsableCommand {
     private func learn() async throws {
         let directory = URL(fileURLWithPath: (recording as NSString).expandingTildeInPath)
         let meta = try SessionMeta.read(from: directory)
+        let transcript = (try? Data(contentsOf: directory.appendingPathComponent("transcript.json")))
+            .flatMap { try? JSONDecoder().decode(Transcript.self, from: $0) }
+        guard (transcript?.engine ?? Config.transcriptionEngine()) != "elevenlabs" else {
+            throw ValidationError("Voice memory requires local diarization and is not used for ElevenLabs recordings. Use speakers refresh for timeline-based names.")
+        }
         guard let track = meta.tracks.first(where: { $0.source == "system" }), let started = meta.audioStartedAt else {
             throw ValidationError("This recording needs a remote audio track and its start timestamp.")
         }

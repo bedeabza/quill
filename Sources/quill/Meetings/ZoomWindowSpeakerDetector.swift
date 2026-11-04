@@ -6,6 +6,7 @@ struct ZoomSpeakerSample: Sendable {
     let observedAt: Double
     let names: [String]
     let scores: [String: Double]
+    var localNames: [String] = []
 }
 
 /// Reads only the identified Zoom meeting window. Frames are discarded after
@@ -55,17 +56,19 @@ actor ZoomWindowSpeakerDetector {
             guard let pixels = ZoomSpeakerEvidence.rgbaPixels(image) else { return nil }
             let sx = Double(width) / frame.width, sy = Double(height) / frame.height
             var scores: [String: Double] = [:]
-            var active: [String] = []
+            var active: [String] = [], local: [String] = []
             for video in videos {
                 let rect = CGRect(x: (video.frame.minX - frame.minX) * sx, y: (video.frame.minY - frame.minY) * sy,
                                   width: video.frame.width * sx, height: video.frame.height * sy)
                 let score = ZoomSpeakerEvidence.borderScore(rgba: pixels, width: width, height: height, rect: rect)
                 scores[video.name] = score
-                if !video.isLocal && !video.muted && score >= 0.65 { active.append(video.name) }
+                if !video.muted && score >= 0.65 {
+                    if video.isLocal { local.append(video.name) } else { active.append(video.name) }
+                }
             }
             guard Set(videos.map(\.name)).count == videos.count else { return nil }
             diagnostic = "Zoom window borders sampled locally"
-            return ZoomSpeakerSample(observedAt: (started + ended) / 2, names: active, scores: scores)
+            return ZoomSpeakerSample(observedAt: (started + ended) / 2, names: active, scores: scores, localNames: local)
         } catch {
             diagnostic = "Zoom window capture unavailable: \(error.localizedDescription)"
             window = nil

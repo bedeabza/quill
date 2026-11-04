@@ -4,6 +4,11 @@ import Foundation
 /// These are Meet's DOM classes exposed by AXDOMClassList, not participant
 /// names or a guessed active video. If the structure changes, return no tiles.
 enum MeetTileEvidence {
+    static func name(_ text: String, isLocal: Bool) -> String? {
+        var value = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if isLocal, value.lowercased().hasSuffix("(you)") { value = String(value.dropLast(5)) }
+        return SpeakerAttribution.cleanName(value)
+    }
     static func tiles(_ nodes: [SpeakerUINode]) -> [SpeakerUITile] {
         func descendant(_ index: Int, of ancestor: Int) -> Bool {
             var current = nodes[index].parent
@@ -35,11 +40,12 @@ enum MeetTileEvidence {
                 ancestor = nodes[parent].parent
             }
             guard let label else { continue }
-            let names = nodes.indices.filter { nodes[$0].role == "AXStaticText" && descendant($0, of: label) && SpeakerAttribution.cleanName(nodes[$0].text) != nil }
+            let isLocal = indicator.classes.contains("eQJ1qd")
+            let names = nodes.indices.filter { nodes[$0].role == "AXStaticText" && descendant($0, of: label) && name(nodes[$0].text, isLocal: isLocal) != nil }
             guard names.count == 1, let nameIndex = names.first,
-                  let name = SpeakerAttribution.cleanName(nodes[nameIndex].text) else { continue }
+                  let name = name(nodes[nameIndex].text, isLocal: isLocal) else { continue }
             result.append(SpeakerUITile(indicatorIndex: index, nameIndex: nameIndex, name: name,
-                                          isLocal: indicator.classes.contains("eQJ1qd")))
+                                          isLocal: isLocal))
         }
         return result
     }

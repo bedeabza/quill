@@ -1,0 +1,2 @@
+# Preserve formatting of unmodified upstream DSP sources.
+Sources/QuillEchoDSP/vendor/** -whitespace

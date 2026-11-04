@@ -14,6 +14,24 @@ import Foundation
 /// directory as its argument — after the transcript is written, or right
 /// after recording when transcription is disabled.
 enum Config {
+    /// Cloud titles require a separate opt-in; transcript cleanup can stay off.
+    static func recordingTitleMode() -> PostProcessingMode {
+        let options = load()?["recording_titles"] as? [String: Any]
+        return (options?["mode"] as? String).flatMap(PostProcessingMode.init(rawValue:)) ?? .off
+    }
+
+    @discardableResult static func setRecordingTitleMode(_ mode: PostProcessingMode) -> Bool {
+        let existing = load()
+        guard existing != nil || !FileManager.default.fileExists(atPath: path.path) else { return false }
+        var config = existing ?? [:]
+        config["recording_titles"] = ["mode": mode.rawValue]
+        do {
+            try FileManager.default.createDirectory(at: path.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try JSONSerialization.data(withJSONObject: config, options: [.prettyPrinted, .sortedKeys]).write(to: path, options: .atomic)
+            return true
+        } catch { return false }
+    }
+
     static func postProcessing() -> PostProcessingOptions {
         PostProcessingOptions(json: load()?["post_processing"] as? [String: Any])
     }
