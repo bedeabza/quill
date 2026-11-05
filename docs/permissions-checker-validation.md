@@ -1,5 +1,7 @@
 # Permissions and readiness checker
 
+> This window was replaced by the Quill window; see [app-window-validation.md](app-window-validation.md).
+
 The Quill menu exposes **Permissions & readiness…**; the recordings browser
 exposes **Permissions…** with the selected folder, recording and engine.
 Checks refresh every three seconds while open. Filesystem and Keychain work

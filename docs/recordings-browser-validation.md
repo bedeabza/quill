@@ -1,5 +1,7 @@
 # Recordings browser and regeneration
 
+> This window was replaced by the Quill window; see [app-window-validation.md](app-window-validation.md).
+
 Validated November 2, 2026.
 
 ## Behavior

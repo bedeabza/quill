@@ -27,16 +27,33 @@ swift build -c release
 python3 tools/package-app.py
 ```
 
-For builds that retain their Keychain identity across updates, use the same
-code-signing certificate each time:
+macOS ties Accessibility and Screen Recording grants to the app's code
+signature. To keep them across rebuilds, create a local signing identity once:
+
+```sh
+python3 tools/package-app.py --create-signing-identity
+```
+
+This creates a self-signed code-signing identity, **Quill Local Signing**, in
+the login keychain (`--keychain PATH` chooses another keychain). Later
+`package-app.py` runs reuse it automatically when neither `--signing-identity`
+nor `QUILL_SIGNING_IDENTITY` is set, so the app's designated requirement
+(identifier plus certificate leaf) stays the same across rebuilds. macOS may ask
+once for your login password when codesign first uses the key; choose
+**Always Allow**. The first build signed with this identity needs Accessibility
+and Screen Recording granted once more; removing old Quill entries from System
+Settings first is advised.
+
+Without that identity, packaging signs ad hoc, whose identity changes when the
+executable changes, and warns that rebuilds lose macOS permissions.
+
+To sign with a Developer ID certificate instead:
 
 ```sh
 python3 tools/package-app.py --signing-identity "Developer ID Application: Your Name (TEAMID)"
 ```
 
-`QUILL_SIGNING_IDENTITY` sets the same option for repeated builds. The default
-is ad hoc signing, whose identity changes when the executable changes. macOS
-can ask for Keychain approval again after installing such an update.
+`QUILL_SIGNING_IDENTITY` sets the same option for repeated builds.
 
 Move `.build/Quill.app` to `~/Applications` using Finder. Quit an older copy
 before replacing it. Quill keeps recordings and configuration outside the app,
@@ -51,7 +68,8 @@ python3 tools/install-cli.py
 
 Open Quill once and allow Notifications and Microphone when macOS asks. Enable
 **Quill** under Privacy & Security > Accessibility for meeting detection. System
-audio permission is requested on the first recording. Only one recording app
+audio permission is requested on the first recording. **Quill → Permissions**
+shows what is still missing. Only one recording app
 instance can run, whether opened from Finder, the terminal, or the login service.
 
 Native notification diagnostics:
@@ -74,59 +92,81 @@ transcription speed.
 ## How to use
 
 1. **Run it** (`quill` in a terminal, or the LaunchAgent).
-2. **Click the feather in the menu bar → Start recording.** First use prompts
-   for microphone and System Audio Recording permissions. While recording, the
-   icon turns red with a running elapsed counter, and macOS shows the purple
-   recording indicator.
-3. **Click → Stop recording** when the meeting ends. Transcription starts
+2. **Click the feather in the menu bar → Start Recording** (⌘R). First use
+   prompts for microphone and System Audio Recording permissions. While
+   recording, the icon turns red with a running elapsed counter, and macOS shows
+   the purple recording indicator.
+3. **Click → Stop Recording** when the meeting ends. Transcription starts
    automatically (the menu shows progress); a notification fires when the
    transcript is ready.
 
-Choose **Recordings…** in the Quill menu to browse recording folders in a native
-window. The sidebar groups recordings by **month/year → day**, newest first,
-with a meeting count for each group. Selecting a day shows only its recordings;
-selecting a month shows that month, and **All recordings** clears the date filter.
-The newest day is selected initially. Search applies to the selected scope and
-matches generated/original meeting titles, folder names and participants.
-Each meeting shows a compact local-time range such as **12:03–13:05 · 1h 02m**.
-Overnight meetings show a next-day marker; hovering exposes exact times.
-Select a recording to preview its original
-transcript or the optional **With names** variant, and use **Open folder** to
-inspect its audio and files in Finder. **Choose folder…** opens another
-recordings root; choosing an individual completed recording selects it in its
-parent folder. The list and job statuses refresh while the window is open.
+The menu stays short. It shows a status line (**Idle** or
+**● Recording · 12:34**) and, while something is transcribing, a line such as
+**Transcribing <folder> · 1 queued**. Below are **Start/Stop Recording** (⌘R),
+**Keep Recording After Meeting Ends** (only while recording), the meeting
+detection status, the **Automatic Meeting Recording** toggle, **Open Quill…**
+(⌘O) and **Quit Quill** (⌘Q). When a permission is missing, **Allow meeting
+detection…** or **Allow Zoom speaker names…** opens the Quill window at
+**Permissions**.
 
-Titles are generated from meeting content when you browse recordings and saved
-separately in `recording-title.json`; original transcript headers/text remain
-unchanged. **Quill menu → Meeting titles** selects local titles, Automatic AI,
-Codex or Claude. Local titles are the default. AI modes send bounded excerpts
-from the beginning, middle and end to an already configured, signed-in text
-service and use a simple local keyword title if unavailable. Each browsed
+**Open Quill…** opens the Quill window. Its sidebar lists **Recordings**, then
+a Settings group: **Transcription**, **Meetings**, **Permissions** and
+**General**. **Transcription** holds the default engine and ElevenLabs API key
+(see [Transcription](#transcription)), transcript cleanup (see
+[Optional transcript cleanup](#optional-transcript-cleanup)) and meeting titles.
+**Meetings** holds the automatic meeting recording toggle with its live status,
+an explanation of **Keep Recording After Meeting Ends** (a one-off action in the
+menu while recording), and **Remember speaker voices**. **General** shows the recordings folder with **Show in
+Finder**, **Open config file**, the version, and **Quit Quill**.
+
+**Recordings** lists recording folders newest first, grouped by day: **Today**,
+**Yesterday**, then dates; days from another year show the year. Toolbar search
+matches generated and original meeting titles, folder names and participants.
+Each row shows the title, time, duration and participants. A tag marks
+recordings that are **Transcribing**, **Queued**, **Failed** or **Not
+transcribed**; ready recordings have no tag. Queued, transcribing and failed
+messages appear in a banner.
+
+Selecting a recording shows its title with **Generate Title** or **Refresh
+Title**, date and time, participants, and the transcript as speaker turns with
+timestamps. The **Original / With names** switch appears only when a verified
+named transcript exists. **Show in Finder** in the toolbar opens the recording
+folder. The folder menu in the footer browses another recordings folder and
+returns to the default one.
+
+Titles are generated from meeting content for recordings visible in the list
+and saved separately in `recording-title.json`; original transcript
+headers/text remain unchanged. **Meeting titles** in **Quill → Transcription**
+selects **Local titles**, **Automatic AI**, **Codex** or **Claude Code**. Local
+titles are the default. Only AI modes send transcript text: bounded excerpts
+from the beginning, middle and end go to an already configured, signed-in text
+service, with a simple local keyword title if it is unavailable. Each visible
 meeting gets a local title before the independent AI queue starts, so titling
 does not block transcription. A matching content checksum reuses an existing
-title, even after transcript metadata changes. **Refresh title** retries title
-generation without uploading audio or retranscribing the meeting. Original
-meeting titles remain searchable.
+title, even after transcript metadata changes. **Generate Title** and
+**Refresh Title** request a title without uploading audio or retranscribing the
+meeting. Original meeting titles remain searchable.
 
-Choose **Permissions & readiness…** in the Quill menu, or **Permissions…** in
-the recordings window, to check this app's microphone, Accessibility, Zoom
-screen access, notifications, folder operations and selected transcription
-engine. The browser also checks the selected recording's audio and folder.
-Missing capture permissions leave the app and checker available; they do not
-block browsing or transcription of existing audio.
-Checks refresh while the window is open, with buttons to open Settings or
-authorize the ElevenLabs key in Keychain. A refresh does not record, upload
-audio, or prompt for Keychain approval. System audio tap permission cannot be
-verified passively; make a short test recording and check `system.caf`.
-Readable Keychain credentials do not prove account quota or ElevenLabs
-speech-to-text permission; those are confirmed by the transcription response.
+**Quill → Permissions** checks Microphone, Accessibility (meeting detection),
+Screen Recording (Zoom speaker indicators), System audio, the Recordings folder,
+Transcription readiness for the default engine, and Notifications. A row shows a
+button only when there is something to do, and **Check Again** refreshes the
+checks. The sidebar badge counts the items that need attention. Missing capture
+permissions leave the app and window available; they do not block browsing or
+transcription of existing audio. A refresh does not record, upload anything, or
+prompt for anything. System audio tap permission cannot be verified until
+recording; make a short test recording and check `system.caf`. A saved
+ElevenLabs key does not prove account quota or speech-to-text permission;
+those are confirmed by the transcription response.
 
-To regenerate a transcript, select the recording, choose an engine and click
-**Regenerate**. The engine choice applies to this job without changing the
-default for new recordings. With ElevenLabs, matching saved responses are reused
-unless **Request a new ElevenLabs transcript** is checked; a new request uploads
-audio again and may be billed again. The usual Scribe diarization and 95% name
-mapping rules apply.
+To regenerate a transcript, select the recording and choose **Regenerate…** in
+the toolbar. The sheet selects the engine for this run only; the default for
+new recordings does not change. With ElevenLabs, matching saved responses are
+reused unless **Request a new ElevenLabs transcript** is checked; a new request
+uploads audio again and may be billed again. The sheet states that one aligned
+recording with echo reduction is sent to ElevenLabs, and that previous
+transcripts are backed up before regeneration. The usual Scribe diarization and
+95% name mapping rules apply.
 
 Manual regeneration uses the app's serial transcription queue, even when
 automatic transcription is disabled. A recording cannot be queued twice; active
@@ -166,7 +206,7 @@ remains readable if the process exits unexpectedly.
 This applies to local-engine transcripts. ElevenLabs originals and their
 optional timeline-named copies are preserved without automatic cleanup.
 
-The menu's **Transcript cleanup (cloud)** submenu offers **Off** (the default),
+**Transcript cleanup** in **Quill → Transcription** offers **Off** (the default),
 **Automatic**, **Codex (ChatGPT account)**, and **Claude Code**. It processes new
 completed recordings before the archive hook runs. The existing transcription
 and archive flow continues when cleanup is off, no compatible signed-in CLI is
@@ -320,7 +360,9 @@ Only the identified Zoom meeting window is captured; frames are processed in
 memory and are never saved or uploaded. Keep the meeting window and your own
 tile visible. Your Zoom display name must match `local_speaker_name` or the
 optional `zoom_local_speaker_name` override. If Quill cannot identify your tile,
-it withholds Zoom names. The menu shows missing permission or name-match issues.
+it withholds Zoom names. The menu's meeting detection status reports missing
+permission or name-match issues; without Screen Recording permission, **Allow
+Zoom speaker names…** opens **Quill → Permissions**.
 Set `zoom_visual_speaker_detection` to `false` to disable window capture.
 
 Zoom capture and border/name mapping have passed a synthetic window test;
@@ -416,7 +458,7 @@ a recording against itself. Audio is not uploaded for fingerprinting. Each
 person retains at most 24 prototypes. Matching runs during post-call speaker
 analysis; this does not add live audio recording outside calls.
 
-Use **Remember speaker voices** in the menu, or manage memory with:
+Use **Remember speaker voices** in **Quill → Meetings**, or manage memory with:
 
 ```sh
 quill speakers memory status
@@ -478,24 +520,32 @@ with macOS's Samantha and Ioana voices and checks English, Romanian (including
 diacritics), and switching back to English on the same engine. The regular
 `swift test` suite skips this model-dependent test.
 
-Use **Quill menu > Transcription engine** to choose **Parakeet v3 (local)**
-or **ElevenLabs Scribe v2 (cloud)**. The choice is saved and applies to the next
-transcription job, including pending recordings. Both tracks of a running job
-use the same engine. There is no silent engine fallback.
+Choose the default engine in **Quill → Transcription**: **Parakeet v3** (on
+this Mac) or **ElevenLabs Scribe v2** (in the cloud). The choice is saved and
+applies to the next transcription job, including pending recordings. Choosing
+ElevenLabs without a saved key is refused with "Save an ElevenLabs API key
+first." Both tracks of a running job use the same engine. There is no silent
+engine fallback.
 
-Set or change your ElevenLabs key from **Quill menu > ElevenLabs API key...**.
-The entry field shows the key so you can check it before saving. The key is stored encrypted in **macOS Keychain**,
-separately from configuration, recordings, and the app bundle. The app reads it
-only when transcription needs it; it is never written to logs or JSON config.
-Quill keeps an authorized key in memory while running, so preparation, audio
-tracks, and later meetings reuse it. Metadata checks detect replacement or
-removal from the menu or CLI and invalidate that cache. Keychain operations
-run off the menu's UI thread; opening the menu never requests authentication.
-If macOS asks for access, choose **Always Allow** to remember approval for
-this signed build. An uncached read still requires an unlocked login Keychain;
-an ad hoc app update can require approval again.
-The key is not synchronized through iCloud. The menu also supports removing it.
-Quill uses the login Keychain's normal macOS access control.
+Enter your ElevenLabs API key in the same pane; its status reads **Saved** or
+**Not set**, with **Save** and **Remove**. Quill stores the key in
+`~/Library/Application Support/Quill/elevenlabs-key`, a plain file only your
+user account can read (mode 0600, inside a 0700 folder) and excluded from Time
+Machine backups. The file is not encrypted: other processes running as your
+user can read it, as with most command-line credentials. No system dialog is
+shown when saving or reading it. The app, `quill transcription key set`,
+`set --stdin`, `remove` and the transcription engine all use this file, which
+is separate from configuration, recordings and the app bundle. The key is never
+written to logs or JSON config. Quill refuses to read the file if other
+accounts can access it or if it is not a regular file, and asks you to save the
+key again. `quill transcription status` reports the file path as
+`credential_storage`. Startup checks include the key, since reading it never
+prompts.
+
+Keys saved by earlier versions in Keychain are not migrated: after updating,
+paste the key once in **Quill → Transcription**. The old Keychain item
+**Quill: ElevenLabs API key** (service `com.bedeabza.quill.elevenlabs`) is no
+longer read; you may delete it in Keychain Access.
 
 ElevenLabs uses `scribe_v2`, automatic language detection, speaker diarization
 and word timestamps.
@@ -542,7 +592,7 @@ does not change the saved selection. Standalone `transcribe` runs neither
 cleanup nor archive publication; use `quill postprocess run` to test cleanup
 on its output. Completed automatic recordings already follow that sequence.
 `--offline` rejects ElevenLabs before any upload and requires cached models
-with Parakeet. A missing key leaves recording and the settings menu available.
+with Parakeet. A missing key leaves recording and the Quill window available.
 
 Whisper has been removed from the app and build. Existing `whisper_cpp` settings
 resolve to local Parakeet until another engine is selected; upgrading never
@@ -563,7 +613,7 @@ Optional, at `~/.config/quill/config.json`:
 - `recordings_dir` — where sessions land. Resolution order: `--out` flag >
   config > `~/Recordings`.
 - `transcription.enabled` — set `false` to just record.
-- `transcription.engine`: `parakeet` (local default) or `elevenlabs` (uploads audio); also selectable from the menu.
+- `transcription.engine`: `parakeet` (local default) or `elevenlabs` (uploads audio); also selectable in **Quill → Transcription**.
 - `mic_voice_processing` — Apple's echo cancellation on the mic (default off).
   Set `true` when recording meetings through the speakers, so playback doesn't
   bleed into the mic track and get transcribed twice as "me". The trade: while
@@ -577,14 +627,17 @@ Optional, at `~/.config/quill/config.json`:
 
 ## Meeting detection
 
-With **Automatic meeting recording** enabled in the menu, Quill starts detected
+With **Automatic Meeting Recording** enabled in the menu or in **Quill →
+Meetings**, Quill starts detected
 meetings automatically and stops 30 seconds after the associated meeting tab or
 call window closes. Native macOS notifications announce recording start and stop,
 without asking for confirmation. Their appearance and visibility follow macOS
-notification preferences and Focus settings. Use **Allow meeting detection** to
-grant macOS Accessibility permission. Turning the toggle off stops an automatically started
-recording; manually started recordings remain under manual control. The menu
-also offers **Keep recording after meeting ends**. Manually stopping a recording
+notification preferences and Focus settings. When Accessibility permission is
+missing, **Allow meeting detection…** in the menu opens **Quill → Permissions**
+to grant it. Turning the toggle off stops an automatically started
+recording; manually started recordings remain under manual control. While
+recording, the menu also offers **Keep Recording After Meeting Ends**, a
+one-off action for that recording. Manually stopping a recording
 suppresses automatic restart for that meeting until it ends or the toggle is
 turned off and back on.
 
@@ -621,7 +674,8 @@ keeps the window open without an identifiable end screen, Quill continues
 recording and reports that meeting status is unavailable. Manual stopping stays
 available. Calls in other UI languages need matching accessible labels.
 
-The feature is on by default and can be disabled in the menu or with
+The feature is on by default and can be disabled in the menu, in
+**Quill → Meetings**, or with
 `"meeting_detection": false` in the existing configuration file. Recordings,
 transcription, and `on_stop` archive hooks retain their normal behavior.
 
@@ -646,7 +700,7 @@ quill install --uninstall
 - **AVAudioEngine** — mic capture
 - **AVAudioFile** — streaming AAC encode into CAF
 - **FluidAudio / Parakeet** — on-device Core ML transcription
-- **NSStatusItem** — the whole UI
+- **NSStatusItem** — the menu-bar menu, which opens the single Quill window
 
 ## Gotchas
 
@@ -657,5 +711,11 @@ quill install --uninstall
   Screen & System Audio Recording.
 - Both current engines recognize English and Romanian automatically. Transcript
   cleanup can correct wording, but still requires review for names and ambiguous speech.
-- The app bundle provides Quill's identity and permission descriptions. Local
-  ad-hoc-signed rebuilds may require refreshing Quill's Accessibility entry.
+- The app bundle provides Quill's identity and permission descriptions. Ad hoc
+  signed rebuilds lose the Accessibility and Screen Recording grants; create the
+  local signing identity once (see Install) to keep them.
+- SwiftPM normally records the deployment target (15.0) as the SDK version,
+  which draws the macOS 15 look. `Package.swift` passes
+  `-platform_version macos 15.0 26.0` to the linker, so binaries record SDK 26
+  (the current macOS look) while still requiring only macOS 15
+  (`otool -l` shows minos 15.0, sdk 26.0).
