@@ -135,7 +135,9 @@ messages appear in a banner.
 Selecting a recording shows its title with **Generate Title** or **Refresh
 Title**, date and time, participants, and the transcript as speaker turns with
 timestamps. The **Original / With names** switch appears for transcribed
-recordings and is disabled unless a verified named transcript exists. **Show in Finder** in the toolbar opens the recording
+recordings and is disabled unless a verified named transcript exists; when one
+exists, selecting the recording opens on **With names**; switching to
+**Original** lasts until another recording is selected. **Show in Finder** in the toolbar opens the recording
 folder. The folder menu in the footer browses another recordings folder and
 returns to the default one.
 
