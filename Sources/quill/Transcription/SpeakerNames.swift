@@ -24,27 +24,38 @@ enum SpeakerNames {
         let complete: Bool
     }
 
-    /// Defaults from the mapping report: names already assigned, then the
-    /// strongest remaining tile evidence, the microphone majority, and the last
-    /// participant left. No name is pre-selected twice.
-    static func rows(_ speakers: [ElevenLabsTranscripts.SpeakerEvidenceReport], participants: [String], localName: String?) -> [Row] {
+    private static func percent(_ value: Double) -> String { "\(Int((value * 100).rounded(.down)))%" }
+
+    private static func reason(_ attribution: String?, _ voice: ElevenLabsTranscripts.SpeakerEvidenceReport?) -> String {
+        switch attribution {
+        case "manual": return "Chosen by you"
+        case "local_microphone_majority": return "Mostly your microphone"
+        case "roster_elimination": return "Only participant left"
+        case "meeting_timeline": return voice.map { "Speaking tile, \(percent($0.agreement)) agreement" } ?? "Speaking tile"
+        default: return "Named copy"
+        }
+    }
+
+    /// Defaults: the names the named copy already gives (`fixed`, speaker ID to
+    /// name and attribution), names assigned in the report, then the strongest
+    /// remaining tile evidence, the microphone majority, and the last participant
+    /// left. No name is pre-selected twice.
+    static func rows(_ speakers: [ElevenLabsTranscripts.SpeakerEvidenceReport], fixed: [String: (name: String, attribution: String?)] = [:],
+                     participants: [String], localName: String?) -> [Row] {
         let voices = speakers.filter { $0.provider_speaker_id != nil }
         var chosen: [String: (name: String, reason: String)] = [:]
         func used(_ name: String) -> Bool { chosen.values.contains { $0.name.caseInsensitiveCompare(name) == .orderedSame } }
-        func percent(_ value: Double) -> String { "\(Int((value * 100).rounded(.down)))%" }
         for voice in voices {
+            if let current = fixed[voice.speaker] { chosen[voice.speaker] = (current.name, reason(current.attribution, voice)) }
+        }
+        for voice in voices where chosen[voice.speaker] == nil {
             guard let name = voice.name, !used(name) else { continue }
-            switch voice.attribution {
-            case "local_microphone_majority": chosen[voice.speaker] = (name, "Mostly your microphone")
-            case "roster_elimination": chosen[voice.speaker] = (name, "Only participant left")
-            default: chosen[voice.speaker] = (name, "Speaking tile, \(percent(voice.agreement)) agreement")
-            }
+            chosen[voice.speaker] = (name, reason(voice.attribution ?? "meeting_timeline", voice))
         }
         for voice in voices.sorted(by: { $0.agreement * $0.observed_seconds > $1.agreement * $1.observed_seconds })
         where chosen[voice.speaker] == nil {
             guard let name = voice.candidate_name, voice.observed_seconds > 0, !used(name) else { continue }
-            // Below the gate, so it is a suggestion: say how strong it was.
-            chosen[voice.speaker] = (name, "Speaking tile, \(percent(voice.agreement)) agreement")
+            chosen[voice.speaker] = (name, reason("meeting_timeline", voice))
         }
         if let localName, !used(localName) {
             func share(_ voice: ElevenLabsTranscripts.SpeakerEvidenceReport) -> Double {
@@ -67,14 +78,15 @@ enum SpeakerNames {
         speaker.split(separator: "_").last.flatMap { Int($0) }.map { "Speaker \($0)" } ?? speaker
     }
 
-    /// The naming state of a Scribe recording; nil when it has no Scribe
-    /// original or no mapping report (Parakeet, unfinished, older caches).
+    /// The naming state of a combined Scribe recording; nil without a combined
+    /// Scribe original or a mapping report (Parakeet, separate tracks, unfinished).
     static func state(in directory: URL) -> State? {
         // Older reports lack newer top-level fields; only the speakers are needed.
         struct Report: Decodable { let speakers: [ElevenLabsTranscripts.SpeakerEvidenceReport] }
         let decoder = JSONDecoder()
         guard let data = try? Data(contentsOf: directory.appendingPathComponent("transcript.json")),
               let original = try? decoder.decode(Transcript.self, from: data), original.variant == "elevenlabs_original",
+              original.segments.contains(where: { $0.source == "meeting" }),
               let reportData = try? Data(contentsOf: directory.appendingPathComponent("speaker-mapping.json")),
               let report = try? decoder.decode(Report.self, from: reportData) else { return nil }
         let meta = try? SessionMeta.read(from: directory)
@@ -90,7 +102,7 @@ enum SpeakerNames {
         }
         // Reports written before the inference existed: derive the source
         // seconds from the saved turns and windows, for defaults only.
-        if original.segments.contains(where: { $0.source == "meeting" }), speakers.contains(where: { $0.local_seconds == nil }),
+        if speakers.contains(where: { $0.local_seconds == nil }),
            let analysis = (try? Data(contentsOf: directory.appendingPathComponent("speaker-analysis.json")))
                .flatMap({ try? decoder.decode(SpeakerAnalysis.self, from: $0) }),
            let manifest = (try? Data(contentsOf: directory.appendingPathComponent(MeetingAudio.manifestName)))
@@ -105,31 +117,32 @@ enum SpeakerNames {
                                             sharedMicrophone: meta?.sharedMicrophone ?? false)
             }
         }
-        let present = Set(original.segments.map(\.speaker))
-        var rows = Self.rows(speakers, participants: participants, localName: meta?.localSpeakerName).filter { present.contains($0.speaker) }
-        var complete = false
-        if let data = try? Data(contentsOf: directory.appendingPathComponent("transcript-named.json")),
-           let named = try? decoder.decode(Transcript.self, from: data) {
-            var current: [String: Transcript.Segment] = [:]
-            for segment in named.segments where segment.speaker_name != nil { current[segment.speaker] = current[segment.speaker] ?? segment }
-            rows = rows.map { row in
-                guard let segment = current[row.speaker], let name = segment.speaker_name else { return row }
-                return Row(speaker: row.speaker, label: row.label, name: name,
-                           reason: segment.attribution == "manual" ? "Chosen by you" : row.reason ?? "Named copy")
-            }
-            complete = !rows.isEmpty && rows.allSatisfy { current[$0.speaker] != nil }
+        // A name that differs from a participant only by case uses the roster's spelling.
+        func spelled(_ name: String) -> String {
+            participants.first { $0.caseInsensitiveCompare(name) == .orderedSame } ?? name
         }
+        var fixed: [String: (name: String, attribution: String?)] = [:]
+        let named = (try? Data(contentsOf: directory.appendingPathComponent("transcript-named.json")))
+            .flatMap { try? decoder.decode(Transcript.self, from: $0) }
+        for segment in named?.segments ?? [] where fixed[segment.speaker] == nil {
+            if let name = segment.speaker_name { fixed[segment.speaker] = (spelled(name), segment.attribution) }
+        }
+        let present = Set(original.segments.map(\.speaker))
+        let rows = Self.rows(speakers, fixed: fixed, participants: participants, localName: meta?.localSpeakerName)
+            .filter { present.contains($0.speaker) }
+            .map { Row(speaker: $0.speaker, label: $0.label, name: $0.name.map(spelled), reason: $0.reason) }
         var names = participants
         for name in rows.compactMap(\.name) where !names.contains(where: { $0.caseInsensitiveCompare(name) == .orderedSame }) { names.append(name) }
-        return State(rows: rows, names: names, complete: complete)
+        return State(rows: rows, names: names, complete: !rows.isEmpty && rows.allSatisfy { fixed[$0.speaker] != nil })
     }
 
     /// Writes the named copy from the original transcript with `names` (speaker
-    /// ID to name; others stay unnamed), under the lock the speaker commands
-    /// take. A replaced named copy is kept under `speaker-label-backup-<id>/`,
-    /// which is returned. Naming nobody removes the named copy.
+    /// ID to name), under the lock the speaker commands take. Other voices stay
+    /// unnamed, or with `keepingOtherNames` keep the names and attribution the
+    /// named copy gave them. A replaced named copy is kept under
+    /// `speaker-label-backup-<id>/`, which is returned. Naming nobody removes it.
     @discardableResult
-    static func apply(_ names: [String: String], in directory: URL) throws -> URL? {
+    static func apply(_ names: [String: String], in directory: URL, keepingOtherNames: Bool = false) throws -> URL? {
         let fm = FileManager.default
         let lock = open(directory.appendingPathComponent(".postprocess.lock").path, O_CREAT | O_RDWR | O_CLOEXEC, 0o600)
         guard lock >= 0 else { throw TranscriptionFailure("Could not lock this recording.") }
@@ -154,6 +167,17 @@ enum SpeakerNames {
         }
         var named = original
         named.variant = "elevenlabs_named"
+        if keepingOtherNames, let data = try? Data(contentsOf: directory.appendingPathComponent("transcript-named.json")) {
+            let previous = try JSONDecoder().decode(Transcript.self, from: data)
+            guard previous.segments.count == named.segments.count,
+                  zip(previous.segments, named.segments).allSatisfy({ $0.speaker == $1.speaker && $0.start_ms == $1.start_ms }) else {
+                throw TranscriptionFailure("The named copy does not match the transcript. Regenerate it or name every voice.")
+            }
+            for index in named.segments.indices where clean[named.segments[index].speaker] == nil {
+                named.segments[index].speaker_name = previous.segments[index].speaker_name
+                named.segments[index].attribution = previous.segments[index].attribution
+            }
+        }
         for index in named.segments.indices {
             guard let name = clean[named.segments[index].speaker] else { continue }
             named.segments[index].speaker_name = name
@@ -171,7 +195,7 @@ enum SpeakerNames {
         }
         guard try Data(contentsOf: url) == data else { throw TranscriptionFailure("The transcript changed while naming speakers.") }
         do {
-            if clean.isEmpty { try ElevenLabsTranscripts.removeNamedVariant(in: directory) }
+            if !named.segments.contains(where: { $0.speaker_name != nil }) { try ElevenLabsTranscripts.removeNamedVariant(in: directory) }
             else { try named.write(to: directory, basename: "transcript-named") }
         } catch {
             for file in files {

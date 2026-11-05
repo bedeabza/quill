@@ -136,7 +136,7 @@ Selecting a recording shows its title with **Generate Title** or **Refresh
 Title**, date and time, participants, and the transcript as speaker turns with
 timestamps. The transcript shows the verified named copy when one exists, and
 otherwise the original transcript with its anonymous labels (Speaker 1,
-Speaker 2…). When an ElevenLabs recording has no named copy, or its named copy
+Speaker 2…). When a combined ElevenLabs recording has no named copy, or its named copy
 leaves a voice unnamed, a **Speakers** block above the transcript shows one row
 per voice, "Speaker 1 is [name]", listing the recording's participants and
 **Unknown**. Each row is pre-selected with the most likely name and says why:
@@ -220,7 +220,7 @@ Each session lands in `~/Recordings/<yyyy.MM.dd-HHmm>/`:
 | `meeting-audio.json` | preparation version, original checksums/offsets, combined checksum, duration, energy diagnostics and conservative source windows |
 | `elevenlabs-meeting-audio.wav.json` | cached Scribe response for the combined recording |
 | `transcript-named.json`, `transcript-named.md` | ElevenLabs only: a separate named copy, created when every combined speaker has a name, either passing the 95% timeline agreement threshold with evidence covering at least 25% of their speech or by one of the labelled inferences below; or chosen by you in the Recordings window |
-| `speaker-mapping.json` | ElevenLabs only: per-speaker agreement, observed speech coverage, ambiguity and acceptance decision |
+| `speaker-mapping.json` | ElevenLabs only: per-speaker agreement, observed speech coverage, ambiguity, evidence decision (`accepted`), microphone and remote seconds, and the assigned `name` with its `attribution`; top-level `accepted` means every voice has a name |
 | `transcribe.log` | transcription progress/errors for this session |
 
 Two original tracks keep your microphone separate from remote audio. Parakeet
@@ -361,10 +361,11 @@ so they stay distinguishable from evidence:
   microphone, the one voice whose single-source audio is at least 90%
   microphone-only (at least 5 seconds and 25% of its speech) is you, provided no
   other voice is at least 50% microphone-only.
-- `roster_elimination`: when the number of Scribe voices equals the number of
-  distinct names in the recorded roster (you included), every assigned name is
-  in that roster, and exactly one voice and one name remain, that voice gets
-  that name. A two-person call needs only one known voice.
+- `roster_elimination`: without a shared microphone, when the number of Scribe
+  voices equals the number of distinct names in the recorded roster (you
+  included), every assigned name is in that roster, and exactly one voice and one
+  name remain, that voice gets that name. A two-person call needs only one known
+  voice.
 
 An evidence-backed name is never replaced. Substantial evidence for someone
 else (at least 50% agreement over 25% of the voice's speech) blocks either
@@ -481,7 +482,8 @@ A known one-to-one recording can be corrected with `--sole-remote-speaker`
 instead of `--speaker`, explicitly confirming that all remote speech is from
 that person. This includes otherwise unknown remote segments.
 For an ElevenLabs recording, `--speaker meeting_1 --name "Alice"` names that
-voice in the named copy, keeping its other names, as **Apply Names** does; the
+voice in the named copy with `manual` attribution, keeping the other voices'
+names and attribution, as **Apply Names** does for every voice; the
 original is unchanged. `--sole-remote-speaker` is refused there, because the
 combined recording also contains your voice.
 A rerun of diarization does not reuse manual names against potentially changed

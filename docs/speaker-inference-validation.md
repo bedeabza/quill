@@ -11,7 +11,8 @@ inferences (`ElevenLabsTranscripts.infer`), in this order:
    single-source audio in microphone-only windows, at least 5 seconds and 25% of
    its speech; no other voice is at least 50% microphone-only. It gets
    `local_speaker_name`. Not with a shared microphone or without a local name.
-2. `roster_elimination`: the Scribe voices and the distinct roster names (you
+2. `roster_elimination`: without a shared microphone (it can carry people who
+   are not on the roster), the Scribe voices and the distinct roster names (you
    included) are equal in number, every assigned name is in the roster, and
    exactly one voice and one name remain. That voice gets that name.
 
@@ -23,10 +24,11 @@ named copy's `attribution` and in `speaker-mapping.json` (`name`, `attribution`,
 named copy is written when every voice has a name. `--no-speakers` disables the
 inferences. Separate-track recordings are unchanged.
 
-The Recordings window shows a **Speakers** block when an ElevenLabs recording has
-no named copy or its named copy leaves a voice unnamed: "Speaker N is [name]" per
+The Recordings window shows a **Speakers** block when a combined ElevenLabs
+recording has no named copy or its named copy leaves a voice unnamed: "Speaker N is [name]" per
 voice, listing the recording's participants and **Unknown**, with the reason for
-each pre-selection. Defaults come from the assigned names, then the strongest
+each pre-selection. Defaults come from the names the named copy already gives,
+then the names assigned in `speaker-mapping.json`, then the strongest
 remaining tile evidence, then the voice that is mostly your microphone, then the
 only participant left; no name is pre-selected twice. Reports written before this
 change get their microphone seconds from the saved `speaker-analysis.json` and
@@ -35,7 +37,8 @@ writes `transcript-named.json`/`.md` under the recording lock with `manual`
 attribution and backs up a replaced named copy to `speaker-label-backup-<id>/`;
 `transcript.json` is never edited. **Name Speakers…** in the actions menu reopens
 the block for a complete named copy. `quill speakers label <dir> --speaker
-meeting_1 --name NAME` does the same for one voice.
+meeting_1 --name NAME` names one voice `manual` and keeps the other voices'
+names and attribution, reading the named copy under the same lock.
 
 ## Why the Teams call at 17:04 had no tile evidence
 
@@ -81,9 +84,12 @@ Tests: `ElevenLabsTranscriptsTests` covers the two-person inference with its
 labels, a second mostly-microphone voice, an unclear majority, more names than
 voices, more voices than names, and contradicting versus agreeing sub-gate
 evidence; `SpeakerNamesTests` covers the defaults (never the same name twice, no
-guess with two names left) and Apply (manual named copy, backup of a replaced
-copy, original byte-identical, unknown speaker refused). `swift test`: 241 tests,
-11 skipped, 0 failures. The CLI path was run once on a copy in `/tmp`: two
+guess with two names left), Apply (manual named copy, backup of a replaced
+copy, original byte-identical, unknown speaker refused), and a bug found in
+review: after naming only Speaker 2 "Bob", Speaker 1's tile evidence for Bob
+pre-selected Bob again; names from the named copy now count as used. The same
+test checks that one-voice labelling keeps the other voice's name. `swift test`:
+242 tests, 11 skipped, 0 failures. The CLI path was run once on a copy in `/tmp`: two
 `speakers label --speaker` calls built the named copy with a backup, the original
 was unchanged, `--sole-remote-speaker` was refused, and `speakers refresh` then
 refused to overwrite the manual names.

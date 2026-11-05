@@ -81,18 +81,12 @@ struct LabelSpeaker: ParsableCommand {
         if let data = try? Data(contentsOf: url), let cloud = try? JSONDecoder().decode(Transcript.self, from: data),
            cloud.variant == "elevenlabs_original" {
             // The original stays unchanged; the name goes into the named copy,
-            // keeping the other names it already has.
+            // which keeps its other names and how they were found.
             guard let speaker else {
                 throw ValidationError("A combined ElevenLabs recording also contains your voice. Name each voice with --speaker.")
             }
-            var names: [String: String] = [:]
-            if let named = (try? Data(contentsOf: dir.appendingPathComponent("transcript-named.json")))
-                .flatMap({ try? JSONDecoder().decode(Transcript.self, from: $0) }) {
-                for segment in named.segments { if let name = segment.speaker_name { names[segment.speaker] = name } }
-            }
-            names[speaker] = name
             do {
-                if let backup = try SpeakerNames.apply(names, in: dir) { print("Backup: \(backup.path)") }
+                if let backup = try SpeakerNames.apply([speaker: name], in: dir, keepingOtherNames: true) { print("Backup: \(backup.path)") }
             } catch let failure as TranscriptionFailure { throw ValidationError(failure.description) }
             print("Named \(SpeakerNames.label(speaker)) \(name) in transcript-named.md. Run the archive sync to publish the correction.")
             return

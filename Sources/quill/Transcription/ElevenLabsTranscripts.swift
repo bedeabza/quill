@@ -198,7 +198,8 @@ enum ElevenLabsTranscripts {
         let unnamed = voices.filter { reports[$0].name == nil }
         let unused = names.filter { name in !named.contains(where: { same($0, name) }) }
         // Every assigned name is a distinct roster member, so the counts mean something.
-        guard voices.count == reports.count, names.count == voices.count, unnamed.count == 1, unused.count == 1,
+        // A shared microphone can carry people who are not on the roster.
+        guard !sharedMicrophone, voices.count == reports.count, names.count == voices.count, unnamed.count == 1, unused.count == 1,
               Set(named.map { $0.lowercased() }).count == named.count,
               named.allSatisfy({ name in names.contains(where: { same($0, name) }) }),
               let index = unnamed.first, let name = unused.first, !contradicts(reports[index], name) else { return }

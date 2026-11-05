@@ -224,7 +224,7 @@ actor TranscriptionCoordinator {
                 tracks: [.init(track: track, segments: segments, meetingAudio: prepared.manifest)], roster: roster,
                 observations: detectSpeakers ? observations : [], inferNames: detectSpeakers)
             try output.write(to: dir)
-            log(dir, "ElevenLabs meeting diarization; name mapping: \(output.report.accepted ? "accepted" : "below threshold or missing evidence")")
+            log(dir, "ElevenLabs meeting diarization; name mapping: \(output.report.accepted ? "every voice named" : "not every voice named (below threshold or missing evidence)")")
             return
         }
 

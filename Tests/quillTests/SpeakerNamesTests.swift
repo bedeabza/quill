@@ -64,4 +64,28 @@ final class SpeakerNamesTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: url), before, "the original transcript is never edited")
         XCTAssertThrowsError(try SpeakerNames.apply(["meeting_9": "Nobody"], in: directory))
     }
+
+    /// Found in review: after naming only Speaker 2 "Bob", Speaker 1's tile
+    /// evidence for Bob pre-selected Bob a second time.
+    func testNamesFromThePartialNamedCopyAreNotSuggestedAgain() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("quill-speaker-names-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+        addTeardownBlock { try FileManager.default.removeItem(at: directory) }
+        var roster = ParticipantRoster(audio_started_at: 1000)
+        roster.participants = ["Dragos Badea", "Bob"].map { .init(name: $0, is_local: $0 == "Dragos Badea", first_seen: 1000, last_seen: 1010, sources: ["meeting_roster"]) }
+        try Transcript(engine: "elevenlabs", model: "scribe_v2", created_at: "fixture", segments: [
+            .init(speaker: "meeting_1", start_ms: 0, end_ms: 1000, text: "Hello.", source: "meeting", attribution: "elevenlabs", provider_speaker_id: "speaker_0"),
+            .init(speaker: "meeting_2", start_ms: 1000, end_ms: 2000, text: "Hi.", source: "meeting", attribution: "elevenlabs", provider_speaker_id: "speaker_1"),
+        ], schema_version: 3, participant_roster: roster, variant: "elevenlabs_original").write(to: directory)
+        let report = ElevenLabsTranscripts.MappingReport(accepted: false, speakers: [
+            voice("meeting_1", candidate: "Bob", agreement: 0.9, observed: 50, local: 0, remote: 0), voice("meeting_2", local: 0, remote: 0)])
+        try JSONEncoder().encode(report).write(to: directory.appendingPathComponent("speaker-mapping.json"))
+        XCTAssertEqual(SpeakerNames.state(in: directory)?.rows.map(\.name), ["Bob", "Dragos Badea"])
+        try SpeakerNames.apply(["meeting_2": "Bob"], in: directory)
+        XCTAssertEqual(SpeakerNames.state(in: directory)?.rows.map(\.name), ["Dragos Badea", "Bob"])
+        // The CLI names one voice and keeps the other's name and attribution.
+        try SpeakerNames.apply(["meeting_1": "Dragos Badea"], in: directory, keepingOtherNames: true)
+        let named = try JSONDecoder().decode(Transcript.self, from: Data(contentsOf: directory.appendingPathComponent("transcript-named.json")))
+        XCTAssertEqual(named.segments.map(\.speaker_name), ["Dragos Badea", "Bob"])
+    }
 }
