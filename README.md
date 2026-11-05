@@ -404,10 +404,14 @@ Brave; other browsers need live validation.
 
 Teams desktop uses its accessible participant names and speaking-frame state.
 This was checked in a two-person call with captions off. Unknown layouts and
-explicitly pinned tiles do not contribute names. Teams does not expose your own
+explicitly pinned tiles do not contribute names. Teams direct calls (a 1:1 call
+started from a chat, titled with the other person's name) have produced no tile
+evidence so far; their layout is unverified, and such a recording is named by the
+inferences above when they apply. Teams does not expose your own
 speaking state: in live captures with your camera on and off, your self tile and
 your People-panel row did not change while you spoke, so a combined Teams recording
-has no local speaking evidence and does not get a named copy. Teams also lights a
+has no local speaking evidence; your voice is named only by
+`local_microphone_majority` or in the Speakers block. Teams also lights a
 remote person's frame for background sound on an open microphone; while two frames
 are lit, that time counts as ambiguous, and a lit frame that falls into a pause in
 another voice cannot name that voice without the 25% coverage above.

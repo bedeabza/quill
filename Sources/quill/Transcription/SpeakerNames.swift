@@ -43,7 +43,8 @@ enum SpeakerNames {
         for voice in voices.sorted(by: { $0.agreement * $0.observed_seconds > $1.agreement * $1.observed_seconds })
         where chosen[voice.speaker] == nil {
             guard let name = voice.candidate_name, voice.observed_seconds > 0, !used(name) else { continue }
-            chosen[voice.speaker] = (name, "Speaking tile, \(percent(voice.agreement)) agreement, \(percent(voice.observed_fraction)) observed")
+            // Below the gate, so it is a suggestion: say how strong it was.
+            chosen[voice.speaker] = (name, "Speaking tile, \(percent(voice.agreement)) agreement")
         }
         if let localName, !used(localName) {
             func share(_ voice: ElevenLabsTranscripts.SpeakerEvidenceReport) -> Double {
