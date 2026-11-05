@@ -104,7 +104,10 @@ private struct FolderActions: View {
 /// Asks before moving a recording's folder to the Trash; explains a refusal.
 @MainActor func confirmDelete(_ entry: RecordingEntry, model: RecordingsModel) {
     func present(_ alert: NSAlert, _ finish: @escaping (NSApplication.ModalResponse) -> Void = { _ in }) {
-        if let window = NSApp.keyWindow { alert.beginSheetModal(for: window, completionHandler: finish) } else { finish(alert.runModal()) }
+        // A right-click does not activate Quill, so there may be no key window yet.
+        NSApp.activate(ignoringOtherApps: true)
+        let window = NSApp.keyWindow ?? NSApp.windows.first { $0.windowController is QuillWindowController && $0.isVisible }
+        if let window { alert.beginSheetModal(for: window, completionHandler: finish) } else { finish(alert.runModal()) }
     }
     func refuse(_ reason: String) {
         let alert = NSAlert()
@@ -118,10 +121,18 @@ private struct FolderActions: View {
     alert.messageText = "Delete “\(entry.title)”?"
     alert.informativeText = RecordingFormat.when(entry) + "\n\nAll of its files move to the Trash: audio, transcripts, "
         + "cached ElevenLabs responses and backups. You can put it back from the Trash."
-    // The first button is the default, so Return cancels.
-    alert.addButton(withTitle: "Cancel")
+    // Cancel is the default, so Return cancels; giving it Return takes Escape
+    // away from it, so a key monitor keeps Escape cancelling too.
+    let cancel = alert.addButton(withTitle: "Cancel")
+    cancel.keyEquivalent = "\r"
     alert.addButton(withTitle: "Delete").hasDestructiveAction = true
+    let escape = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+        guard event.keyCode == 53, event.window === alert.window else { return event }
+        cancel.performClick(nil)
+        return nil
+    }
     present(alert) { response in
+        if let escape { NSEvent.removeMonitor(escape) }
         guard response == .alertSecondButtonReturn else { return }
         Task { if let failure = await model.delete(entry) { refuse(failure) } }
     }
