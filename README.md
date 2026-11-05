@@ -288,6 +288,9 @@ membership observations in `speaker-observations.jsonl`. Names are collected fro
 meeting tiles independently of their speaking indicators. The scoped meeting tree
 is refreshed during the call, including background browser tabs, so silent people,
 late arrivals, and departures can be recorded. Known names survive missing UI data.
+Clock-like text such as a call timer (`54:11`, `01:07:30`) is never a name. Older
+recordings that saved Teams timer ticks as participants are shown without them;
+their `participants.json` is not rewritten.
 The transcript and archive list participants before the spoken transcript, and the
 coding harness receives that roster plus verified speaker assignments.
 
@@ -357,7 +360,10 @@ Brave; other browsers need live validation.
 
 Teams desktop uses its accessible participant names and speaking-frame state.
 This was checked in a two-person call with captions off. Unknown layouts and
-explicitly pinned tiles do not contribute names.
+explicitly pinned tiles do not contribute names. Your own Teams tile is not read
+yet, so a combined Teams recording has no local speaking evidence and does not
+get a named copy. Teams also lights a remote person's frame for background sound
+on an open microphone; while two frames are lit, that time counts as ambiguous.
 
 Zoom desktop exposes participant names through Accessibility. Quill also needs
 Screen Recording permission to read the green/yellow active-speaker borders.

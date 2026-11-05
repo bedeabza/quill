@@ -111,6 +111,27 @@ final class ParticipantRosterTests: XCTestCase {
         XCTAssertEqual(ParticipantEvidence.members(zoom, service: "Zoom", localName: "Dragos").map(\.name), ["Mihai"])
     }
 
+    func testTeamsCallTimerIsNeverAParticipant() throws {
+        // Live Teams 2026-11-05: the call timer sat under vdi-occlusion and was
+        // saved as a new participant on every two-second roster scan.
+        let teams = [SpeakerUINode(parent: nil, role: "AXGroup", text: "", classes: ["vdi-occlusion"]),
+                     .init(parent: 0, role: "AXStaticText", text: "54:11", classes: []),
+                     .init(parent: nil, role: "AXGroup", text: "", classes: ["vdi-occlusion"]),
+                     .init(parent: 2, role: "AXStaticText", text: "Marian", classes: [])]
+        XCTAssertEqual(ParticipantEvidence.members(teams, service: "Microsoft Teams", localName: "Dragos").map(\.name), ["Marian"])
+        for timer in ["54:11", "01:07:30", "9:05"] { XCTAssertNil(SpeakerAttribution.cleanName(timer)) }
+        XCTAssertEqual(SpeakerAttribution.cleanName("Marian 2"), "Marian 2")
+
+        // Recordings saved before the fix display cleanly without being rewritten.
+        let saved = #"{"audio_started_at":1000,"intervals":[],"participants":["#
+            + #"{"name":"54:11","is_local":false,"first_seen":1000,"last_seen":1000,"sources":["meeting_roster"]},"#
+            + #"{"name":"01:07:30","is_local":false,"first_seen":1800,"last_seen":1800,"sources":["meeting_roster"]},"#
+            + #"{"name":"Marian","is_local":false,"first_seen":1000,"last_seen":2600,"sources":["meeting_roster","meeting_tile"]}]}"#
+        let roster = try JSONDecoder().decode(ParticipantRoster.self, from: Data(saved.utf8))
+        XCTAssertEqual(roster.participants.map(\.name), ["Marian"])
+        XCTAssertEqual(roster.audio_started_at, 1000)
+    }
+
     func testRecordingPersistsMembershipBeforeTranscription() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("quill-roster-recording-test-" + UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)

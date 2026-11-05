@@ -107,6 +107,19 @@ struct ParticipantRoster: Codable, Sendable {
     }
 }
 
+extension ParticipantRoster {
+    /// Saved rosters are read as recorded, minus entries that are not names
+    /// (older Teams recordings saved every call-timer tick). Files stay unchanged.
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        audio_started_at = try container.decode(Double.self, forKey: .audio_started_at)
+        participants = try container.decode([MeetingParticipant].self, forKey: .participants)
+            .filter { SpeakerAttribution.cleanName($0.name) != nil }
+        intervals = try container.decode([Interval].self, forKey: .intervals)
+        confirmed_sole_remote_speaker = try container.decodeIfPresent(String.self, forKey: .confirmed_sole_remote_speaker)
+    }
+}
+
 enum ParticipantEvidence {
     static func members(_ nodes: [SpeakerUINode], service: String, localName: String?) -> [RosterMember] {
         var result: [RosterMember] = []
