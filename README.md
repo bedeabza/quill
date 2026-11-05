@@ -136,7 +136,17 @@ Selecting a recording shows its title with **Generate Title** or **Refresh
 Title**, date and time, participants, and the transcript as speaker turns with
 timestamps. The transcript shows the verified named copy when one exists, and
 otherwise the original transcript with its anonymous labels (Speaker 1,
-Speaker 2…). **Show in Finder** in the toolbar opens the recording
+Speaker 2…). When an ElevenLabs recording has no named copy, or its named copy
+leaves a voice unnamed, a **Speakers** block above the transcript shows one row
+per voice, "Speaker 1 is [name]", listing the recording's participants and
+**Unknown**. Each row is pre-selected with the most likely name and says why:
+the automatic name, the strongest speaking-tile evidence below the gate, the
+voice heard mostly on your microphone, or the only participant left. No name is
+pre-selected twice. **Apply Names** writes `transcript-named.json` and
+`transcript-named.md` with `manual` attribution, keeps a replaced named copy
+under `speaker-label-backup-<id>/`, and never edits `transcript.json`.
+**Name Speakers…** in the actions menu reopens the block for a complete named
+copy. **Show in Finder** in the toolbar opens the recording
 folder. The folder menu in the footer browses another recordings folder and
 returns to the default one.
 
@@ -209,7 +219,7 @@ Each session lands in `~/Recordings/<yyyy.MM.dd-HHmm>/`:
 | `meeting-audio.wav` | ElevenLabs only: one aligned 16 kHz mono recording, with playback-reference echo reduction before mixing |
 | `meeting-audio.json` | preparation version, original checksums/offsets, combined checksum, duration, energy diagnostics and conservative source windows |
 | `elevenlabs-meeting-audio.wav.json` | cached Scribe response for the combined recording |
-| `transcript-named.json`, `transcript-named.md` | ElevenLabs only: a separate named copy, created only when every combined speaker passes the 95% timeline agreement threshold with evidence covering at least 25% of their speech |
+| `transcript-named.json`, `transcript-named.md` | ElevenLabs only: a separate named copy, created when every combined speaker has a name, either passing the 95% timeline agreement threshold with evidence covering at least 25% of their speech or by one of the labelled inferences below; or chosen by you in the Recordings window |
 | `speaker-mapping.json` | ElevenLabs only: per-speaker agreement, observed speech coverage, ambiguity and acceptance decision |
 | `transcribe.log` | transcription progress/errors for this session |
 
@@ -328,10 +338,10 @@ Readable speaker numbers share one meeting-wide list. Automatic transcript clean
 roster-based speaker relabeling do not modify this original.
 
 Quill compares each combined speaker's timed words with recorded active-speaker
-UI evidence. A name must account for at least 95% of that speaker's **observed
-speech duration**, and **every speaker must pass** before Quill writes
-`transcript-named.json` and `transcript-named.md`. No evidence or an unknown
-provider speaker fails the check. Time without observations is excluded from
+UI evidence. An evidence-backed name must account for at least 95% of that
+speaker's **observed speech duration**, and **every speaker must have a name**
+before Quill writes `transcript-named.json` and `transcript-named.md`. No evidence
+or an unknown provider speaker fails the check. Time without observations is excluded from
 the agreement denominator, but the observed evidence must cover at least 25% of
 that speaker's speech: a few milliseconds of one name never count as 100%
 agreement for a whole voice. `speaker-mapping.json` reports agreement and coverage
@@ -339,10 +349,28 @@ for each speaker. Duplicated evidence counts once;
 conflicting names and overlapping provider voices count as ambiguity. Caption
 text, participant lists and saved voice fingerprints do not vote for names.
 The named copy changes names and attribution only, retaining speaker IDs,
-wording, segment boundaries and timestamps. For combined audio, a local name
-also requires actual local active-speaker evidence; it is never assigned from
-the microphone setting alone. Only clear local-only or remote-only audio
-windows may support the corresponding UI name. Overlap and uncertain source
+wording, segment boundaries and timestamps. Only clear local-only or
+remote-only audio windows may support the corresponding UI name.
+
+Voices without evidence-backed names can be named by two inferences on the
+combined recording, each recorded as the segment's `attribution` and in
+`speaker-mapping.json` (`name`, `attribution`, `local_seconds`, `remote_seconds`),
+so they stay distinguishable from evidence:
+
+- `local_microphone_majority`: with `local_speaker_name` set and no shared
+  microphone, the one voice whose single-source audio is at least 90%
+  microphone-only (at least 5 seconds and 25% of its speech) is you, provided no
+  other voice is at least 50% microphone-only.
+- `roster_elimination`: when the number of Scribe voices equals the number of
+  distinct names in the recorded roster (you included), every assigned name is
+  in that roster, and exactly one voice and one name remain, that voice gets
+  that name. A two-person call needs only one known voice.
+
+An evidence-backed name is never replaced. Substantial evidence for someone
+else (at least 50% agreement over 25% of the voice's speech) blocks either
+inference, as does another voice already named as you. The inferences use the
+roster, which can miss someone who never appeared in the meeting window; check
+inferred names in the named copy. `--no-speakers` disables them. Overlap and uncertain source
 windows do not vote. Shared-microphone local tiles cannot establish individual
 names. Legacy separate-track recordings retain their original refresh rules.
 
@@ -448,6 +476,10 @@ Corrections make an exact JSON backup and update every matching turn.
 A known one-to-one recording can be corrected with `--sole-remote-speaker`
 instead of `--speaker`, explicitly confirming that all remote speech is from
 that person. This includes otherwise unknown remote segments.
+For an ElevenLabs recording, `--speaker meeting_1 --name "Alice"` names that
+voice in the named copy, keeping its other names, as **Apply Names** does; the
+original is unchanged. `--sole-remote-speaker` is refused there, because the
+combined recording also contains your voice.
 A rerun of diarization does not reuse manual names against potentially changed
 speaker IDs. Run your archive sync separately to publish a correction.
 
@@ -461,7 +493,7 @@ quill speakers refresh /path/to/recording
 
 Refresh preserves the original transcript and keeps exact backups. It rejects
 edited wording, manual corrections and `--remote-speakers`; the same 95% gate
-controls the separate named copy. A previous named copy is removed when the
+and inferences control the separate named copy. A previous named copy is removed when the
 new evidence no longer passes. Older caches created with diarization disabled
 cannot be refreshed: explicitly regenerate with `quill transcribe RECORDING
 --engine elevenlabs --force`, which uploads audio again. Run archive sync

@@ -78,15 +78,32 @@ struct LabelSpeaker: ParsableCommand {
         let dir = URL(fileURLWithPath: (recording as NSString).expandingTildeInPath)
         let url = dir.appendingPathComponent("transcript.json")
         let fm = FileManager.default
+        if let data = try? Data(contentsOf: url), let cloud = try? JSONDecoder().decode(Transcript.self, from: data),
+           cloud.variant == "elevenlabs_original" {
+            // The original stays unchanged; the name goes into the named copy,
+            // keeping the other names it already has.
+            guard let speaker else {
+                throw ValidationError("A combined ElevenLabs recording also contains your voice. Name each voice with --speaker.")
+            }
+            var names: [String: String] = [:]
+            if let named = (try? Data(contentsOf: dir.appendingPathComponent("transcript-named.json")))
+                .flatMap({ try? JSONDecoder().decode(Transcript.self, from: $0) }) {
+                for segment in named.segments { if let name = segment.speaker_name { names[segment.speaker] = name } }
+            }
+            names[speaker] = name
+            do {
+                if let backup = try SpeakerNames.apply(names, in: dir) { print("Backup: \(backup.path)") }
+            } catch let failure as TranscriptionFailure { throw ValidationError(failure.description) }
+            print("Named \(SpeakerNames.label(speaker)) \(name) in transcript-named.md. Run the archive sync to publish the correction.")
+            return
+        }
         let lock = open(dir.appendingPathComponent(".postprocess.lock").path, O_CREAT | O_RDWR | O_CLOEXEC, 0o600)
         guard lock >= 0 else { throw ValidationError("Could not lock this transcript.") }
         defer { flock(lock, LOCK_UN); close(lock) }
         guard flock(lock, LOCK_EX | LOCK_NB) == 0 else { throw ValidationError("Transcript processing is already running.") }
         let original = try Data(contentsOf: url)
         var transcript = try JSONDecoder().decode(Transcript.self, from: original)
-        guard transcript.variant != "elevenlabs_original" else {
-            throw ValidationError("The original ElevenLabs transcript is preserved unchanged. Use speakers refresh to generate the separate named variant from recorded UI evidence.")
-        }
+        guard transcript.variant != "elevenlabs_original" else { throw ValidationError("The transcript changed during labelling.") }
         func matches(_ segment: Transcript.Segment) -> Bool {
             soleRemoteSpeaker ? (segment.source == "system" || segment.speaker == "them") : segment.speaker == speaker
         }

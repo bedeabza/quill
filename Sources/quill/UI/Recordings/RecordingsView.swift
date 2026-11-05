@@ -83,6 +83,10 @@ private struct RecordingActions: View {
         Button("Show in Finder") { model.showInFinder(entry) }
         Button(entry.hasTranscript ? "Regenerate…" : "Transcribe…") { regenerate(entry) }
             .disabled(!model.canRegenerate(entry))
+        if model.selection == entry.directory, model.speakerNames?.rows.isEmpty == false {
+            Button("Name Speakers…") { model.editingSpeakerNames = true }
+                .disabled(model.showsSpeakerNames)
+        }
         Divider()
         Button("Delete…") { confirmDelete(entry, model: model) }
     }
@@ -301,6 +305,11 @@ private struct RecordingDetail: View {
                 if let banner {
                     banner.padding(.bottom, 18)
                 }
+                if model.showsSpeakerNames, let state = model.speakerNames {
+                    SpeakerNamesForm(model: model, state: state, colors: turnColors)
+                        .id(state)
+                        .padding(.bottom, 18)
+                }
                 transcriptBar
                     .padding(.bottom, 14)
                 transcript
@@ -316,6 +325,11 @@ private struct RecordingDetail: View {
     }
 
     private var status: RecordingStatus { model.status(of: entry) }
+
+    private var turnColors: [String: Color] {
+        if case .turns(let turns) = model.transcript { return RecordingFormat.colors(turns) }
+        return [:]
+    }
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -438,6 +452,91 @@ private struct RecordingDetail: View {
             .foregroundStyle(.tertiary)
             .multilineTextAlignment(.center)
             .frame(maxWidth: .infinity, minHeight: 160)
+    }
+}
+
+/// "Speaker 1 is [name]" for each voice of a Scribe transcript, pre-selected
+/// with the most likely name. Apply writes the named copy; the original stays.
+private struct SpeakerNamesForm: View {
+    let model: RecordingsModel
+    let state: SpeakerNames.State
+    /// Transcript colours by displayed speaker, so each row matches its turns.
+    let colors: [String: Color]
+    @State private var choices: [String: String?]
+
+    init(model: RecordingsModel, state: SpeakerNames.State, colors: [String: Color]) {
+        self.model = model
+        self.state = state
+        self.colors = colors
+        _choices = State(initialValue: Dictionary(uniqueKeysWithValues: state.rows.map { ($0.speaker, $0.name) }))
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Speakers")
+                    .font(.headline)
+                Text(state.rows.contains { $0.reason != nil }
+                     ? "Check the suggested names, then apply them to a named copy of the transcript."
+                     : "Choose who each voice is to create a named copy of the transcript.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+            Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: 8, verticalSpacing: 6) {
+                ForEach(state.rows, id: \.speaker) { row in
+                    GridRow {
+                        HStack(spacing: 6) {
+                            Circle()
+                                .fill(colors[row.label] ?? row.name.flatMap { colors[$0] } ?? Color.secondary)
+                                .frame(width: 7, height: 7)
+                            Text("\(row.label) is")
+                        }
+                        Picker(row.label, selection: binding(row.speaker)) {
+                            ForEach(state.names, id: \.self) { name in Text(name).tag(Optional(name)) }
+                            Divider()
+                            Text("Unknown").tag(String?.none)
+                        }
+                        .labelsHidden()
+                        .fixedSize()
+                        Text(caption(row))
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                }
+            }
+            HStack(spacing: 8) {
+                if let error = model.speakerNamesError {
+                    Label(error, systemImage: "exclamationmark.triangle.fill")
+                        .font(.callout)
+                        .foregroundStyle(.red)
+                }
+                Spacer(minLength: 0)
+                if model.isApplyingSpeakerNames { ProgressView().controlSize(.small) }
+                if state.complete {
+                    Button("Cancel") { model.editingSpeakerNames = false }
+                        .keyboardShortcut(.cancelAction)
+                }
+                Button("Apply Names") { model.applySpeakerNames(choices) }
+                    .disabled(model.isApplyingSpeakerNames || (!state.complete && choices.values.allSatisfy { $0 == nil }))
+                    .help("Writes a named copy of the transcript. The original transcript is kept unchanged.")
+            }
+            .controlSize(.small)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background(Color.primary.opacity(0.04), in: .rect(cornerRadius: 8))
+    }
+
+    private func binding(_ speaker: String) -> Binding<String?> {
+        Binding(get: { choices[speaker] ?? nil }, set: { choices[speaker] = $0 })
+    }
+
+    /// The reason while the suggestion stands; nothing once the user changes it.
+    private func caption(_ row: SpeakerNames.Row) -> String {
+        let current = choices[row.speaker] ?? nil
+        guard current == row.name else { return "" }
+        return row.reason ?? ""
     }
 }
 

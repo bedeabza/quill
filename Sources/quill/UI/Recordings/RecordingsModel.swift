@@ -44,6 +44,8 @@ final class RecordingsModel {
         didSet {
             guard selection != oldValue else { return }
             regenerateError = nil
+            editingSpeakerNames = false
+            speakerNamesError = nil
             reloadTranscript()
         }
     }
@@ -54,6 +56,17 @@ final class RecordingsModel {
     /// Preview of the selected transcript, the verified named copy when the
     /// recording has one; nil while nothing is selected or loading.
     private(set) var transcript: TranscriptPreview?
+    /// Voices of the selected Scribe transcript with their pre-selected names;
+    /// nil when the recording has none to name.
+    private(set) var speakerNames: SpeakerNames.State?
+    /// Shows the speaker pickers although the named copy names everyone.
+    var editingSpeakerNames = false
+    private(set) var speakerNamesError: String?
+    private(set) var isApplyingSpeakerNames = false
+    var showsSpeakerNames: Bool {
+        guard let state = speakerNames, !state.rows.isEmpty else { return false }
+        return !state.complete || editingSpeakerNames
+    }
 
     /// Engine for the next `regenerate()`; does not change the default engine.
     var regenerateEngine = TranscriptionEngineKind(rawValue: Config.transcriptionEngine()) ?? .parakeet
@@ -183,6 +196,25 @@ final class RecordingsModel {
         }
     }
 
+    /// Writes the named copy of the selected recording: speaker ID to name, nil
+    /// for Unknown. The original transcript is unchanged; names are `manual`.
+    func applySpeakerNames(_ names: [String: String?]) {
+        guard let entry = selectedEntry, !isApplyingSpeakerNames else { return }
+        let chosen = names.compactMapValues { $0 }
+        isApplyingSpeakerNames = true
+        speakerNamesError = nil
+        Task { [weak self] in
+            let result = await Task.detached(priority: .userInitiated) { Result { try SpeakerNames.apply(chosen, in: entry.directory) } }.value
+            guard let self else { return }
+            self.isApplyingSpeakerNames = false
+            switch result {
+            case .success: if self.selection == entry.directory { self.editingSpeakerNames = false }
+            case .failure(let error): self.speakerNamesError = (error as? TranscriptionFailure)?.description ?? error.localizedDescription
+            }
+            self.refresh()
+        }
+    }
+
     func showInFinder(_ entry: RecordingEntry) { NSWorkspace.shared.open(entry.directory) }
 
     /// Why `entry` cannot be deleted right now, judged from the last refresh;
@@ -257,28 +289,32 @@ final class RecordingsModel {
     /// transcript files change; results for an older request are dropped.
     private func reloadTranscript() {
         guard let entry = selectedEntry else {
-            transcriptRequest = UUID(); transcriptSignature = nil; transcript = nil
+            transcriptRequest = UUID(); transcriptSignature = nil; transcript = nil; speakerNames = nil
             return
         }
         let named = entry.hasNamedTranscript
         let base = named ? "transcript-named" : "transcript"
-        let stamps = ["json", "md"].map { ext in
-            let values = try? entry.directory.appendingPathComponent(base + "." + ext).resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey])
+        let files = [base + ".json", base + ".md", "transcript.json", "transcript-named.json", "speaker-mapping.json"]
+        let stamps = files.map { file in
+            let values = try? entry.directory.appendingPathComponent(file).resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey])
             return "\(values?.contentModificationDate?.timeIntervalSince1970 ?? 0):\(values?.fileSize ?? 0)"
         }.joined(separator: ":")
         let signature = entry.directory.path + "/" + base + "/" + stamps
         guard signature != transcriptSignature else { return }
+        if transcriptSignature?.hasPrefix(entry.directory.path + "/") != true { speakerNames = nil }
         if transcriptSignature?.hasPrefix(entry.directory.path + "/" + base + "/") != true { transcript = nil }
         transcriptSignature = signature
         let request = UUID()
         transcriptRequest = request
         Task { [weak self] in
-            let preview = await Task.detached(priority: .utility) {
-                (try? RecordingsLibrary.transcript(in: entry.directory, named: named))
-                    ?? .empty("Could not read the transcript. Open its folder to inspect it.")
+            let (preview, names) = await Task.detached(priority: .utility) {
+                ((try? RecordingsLibrary.transcript(in: entry.directory, named: named))
+                    ?? .empty("Could not read the transcript. Open its folder to inspect it."),
+                 SpeakerNames.state(in: entry.directory))
             }.value
             guard let self, self.transcriptRequest == request else { return }
             if self.transcript != preview { self.transcript = preview }
+            if self.speakerNames != names { self.speakerNames = names }
         }
     }
 

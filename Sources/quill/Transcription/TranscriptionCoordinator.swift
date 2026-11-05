@@ -222,7 +222,7 @@ actor TranscriptionCoordinator {
             let track = SessionMeta.Track(file: MeetingAudio.filename, speaker: "meeting", offsetMs: 0)
             let output = ElevenLabsTranscripts.build(meta: meta,
                 tracks: [.init(track: track, segments: segments, meetingAudio: prepared.manifest)], roster: roster,
-                observations: detectSpeakers ? observations : [])
+                observations: detectSpeakers ? observations : [], inferNames: detectSpeakers)
             try output.write(to: dir)
             log(dir, "ElevenLabs meeting diarization; name mapping: \(output.report.accepted ? "accepted" : "below threshold or missing evidence")")
             return

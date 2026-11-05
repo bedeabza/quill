@@ -101,6 +101,69 @@ final class ElevenLabsTranscriptsTests: XCTestCase, @unchecked Sendable {
         XCTAssertNil(output.named)
     }
 
+    private func combined(_ segments: [TranscriptSegment], local: [(Double, Double)], remote: [(Double, Double)],
+                          roster names: [String], observations: [SpeakerObservation] = [],
+                          inferNames: Bool = true) -> ElevenLabsTranscripts.Output {
+        let track = SessionMeta.Track(file: MeetingAudio.filename, speaker: "meeting", offsetMs: 0)
+        let manifest = MeetingAudio.Manifest(version: 1, algorithm: "fixture", sample_rate: 16000, inputs: [], audio_sha256: "fixture",
+            frames: 16000 * 200, microphone_energy: 0, cleaned_microphone_energy: 0, system_energy: 0,
+            local_windows: local.map { .init(start: $0.0, end: $0.1) }, remote_windows: remote.map { .init(start: $0.0, end: $0.1) })
+        var roster = ParticipantRoster(audio_started_at: 1000)
+        roster.observe(.init(observed_at: 1000, meeting_id: "local", names: ["Dragos Badea"], source: "local_microphone", is_local: true),
+                       localName: "Dragos Badea")
+        roster.observe(.init(observed_at: 1000, meeting_id: "test", names: [], source: "meeting_roster",
+                             participants: names.map { .init(name: $0, is_local: false) }), localName: "Dragos Badea")
+        return ElevenLabsTranscripts.build(meta: .init(tracks: [track], audioStartedAt: 1000, localSpeakerName: "Dragos Badea",
+            sharedMicrophone: false), tracks: [.init(track: track, segments: segments, meetingAudio: manifest)],
+            roster: roster, observations: observations, inferNames: inferNames)
+    }
+
+    /// Recording 2026.11.05-1704 (Teams 1:1 call): no tile evidence for either
+    /// voice. One voice is almost only microphone, the other remote.
+    func testTwoPersonCallIsNamedByMicrophoneMajorityThenElimination() {
+        let voices = [segment(start: 0, end: 60), segment("speaker_1", start: 60, end: 100)]
+        let output = combined(voices, local: [(0, 50), (61, 62)], remote: [(59.5, 60), (62, 90)], roster: ["Patranca, Bogdan - CTP"])
+        XCTAssertTrue(output.report.accepted)
+        XCTAssertEqual(output.report.speakers.map(\.name), ["Dragos Badea", "Patranca, Bogdan - CTP"])
+        XCTAssertEqual(output.report.speakers.map(\.attribution), ["local_microphone_majority", "roster_elimination"])
+        XCTAssertEqual(output.report.speakers.map(\.accepted), [false, false], "inferred names never pass as evidence")
+        XCTAssertEqual(output.report.speakers[0].local_seconds ?? 0, 50, accuracy: 0.000001)
+        XCTAssertEqual(output.named?.segments.map(\.attribution), ["local_microphone_majority", "roster_elimination"])
+        XCTAssertTrue(output.original.segments.allSatisfy { $0.speaker_name == nil })
+        XCTAssertNil(combined(voices, local: [(0, 50)], remote: [(62, 90)], roster: ["Patranca, Bogdan - CTP"], inferNames: false).named)
+    }
+
+    func testInferenceNeedsOneClearMicrophoneVoiceAndMatchingCounts() {
+        let two = [segment(start: 0, end: 60), segment("speaker_1", start: 60, end: 100)]
+        // A second voice that is mostly microphone too (someone in the room).
+        let room = combined(two, local: [(0, 50), (60, 80)], remote: [(80, 90)], roster: ["Bob"])
+        XCTAssertEqual(room.report.speakers.compactMap(\.name), [])
+        // Below 90% microphone: no local name, so nothing is left to eliminate.
+        let unclear = combined(two, local: [(0, 40)], remote: [(40, 50), (62, 90)], roster: ["Bob"])
+        XCTAssertNil(unclear.named)
+        XCTAssertEqual(unclear.report.speakers.compactMap(\.name), [])
+        // Two remote names for one remote voice: elimination does not guess.
+        let crowd = combined(two, local: [(0, 50)], remote: [(62, 90)], roster: ["Bob", "Carol"])
+        XCTAssertEqual(crowd.report.speakers.compactMap(\.name), ["Dragos Badea"])
+        XCTAssertNil(crowd.named)
+        // Three voices, two people: elimination does not apply either.
+        let split = combined(two + [segment("speaker_2", start: 100, end: 120)], local: [(0, 50)], remote: [(62, 120)], roster: ["Bob"])
+        XCTAssertNil(split.named)
+    }
+
+    func testEvidenceForSomeoneElseBlocksElimination() {
+        let two = [segment(start: 0, end: 60), segment("speaker_1", start: 60, end: 100)]
+        // Carol's tile covers 30% of the remote voice at 80%: short of the gate, but
+        // it contradicts the roster's only remote name.
+        let samples = observations("Carol", from: 62, to: 72) + observations("Bob", from: 72, to: 74.5)
+        let blocked = combined(two, local: [(0, 50)], remote: [(60, 100)], roster: ["Bob"], observations: samples)
+        XCTAssertEqual(blocked.report.speakers.compactMap(\.name), ["Dragos Badea"])
+        XCTAssertNil(blocked.named)
+        // Matching evidence below the gate does not block it.
+        let agreeing = combined(two, local: [(0, 50)], remote: [(60, 100)], roster: ["Bob"], observations: observations("Bob", from: 62, to: 64))
+        XCTAssertEqual(agreeing.report.speakers.compactMap(\.attribution), ["local_microphone_majority", "roster_elimination"])
+    }
+
     func testDuplicateEvidenceDoesNotOutvoteAConflict() {
         let alice = observations("Alice", from: 0, to: 10)
         let bob = observations("Bob", from: 10, to: 20)
