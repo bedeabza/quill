@@ -12,22 +12,19 @@ final class PermissionsWindowController: NSWindowController, NSWindowDelegate {
     private let root: URL
     private let recording: URL?
     private let engine: TranscriptionEngineKind
-    private let keychain: ElevenLabsKeychain
+    private let keyStore: ElevenLabsKeyStore
     private var labels: [PermissionsReport.Item: NSTextField] = [:]
     private var checks: [PermissionsReport.Item: Check] = [:]
     private var tasks: [PermissionsReport.Item: Task<Void, Never>] = [:]
-    private var started: [PermissionsReport.Item: Date] = [:]
     private var timer: Timer?
-    private var authorizing = false
-    private let authorizeButton = NSButton(title: "Authorize key", target: nil, action: nil)
     private let summary = NSTextField(wrappingLabelWithString: "Checking access…")
 
     init(root: URL, recording: URL? = nil, engine: TranscriptionEngineKind? = nil,
-         keychain: ElevenLabsKeychain = .shared) {
+         keyStore: ElevenLabsKeyStore = .shared) {
         self.root = root
         self.recording = recording
         self.engine = engine ?? TranscriptionEngineKind(rawValue: Config.transcriptionEngine()) ?? .parakeet
-        self.keychain = keychain
+        self.keyStore = keyStore
         let availableHeight = (NSScreen.main?.visibleFrame.height ?? 950) - 60
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 740, height: min(availableHeight, recording == nil ? 790 : 870)),
                               styleMask: [.titled, .closable], backing: .buffered, defer: false)
@@ -71,12 +68,10 @@ final class PermissionsWindowController: NSWindowController, NSWindowDelegate {
             labels[item] = status
             let details = NSStackView(views: [heading, status])
             details.orientation = .vertical; details.alignment = .leading; details.spacing = 3
-            let button: NSButton
-            if item == .transcription && engine == .elevenLabs { button = authorizeButton }
-            else { button = NSButton(title: item == .folder || item == .recording ? "Open folder" : "Settings…", target: nil, action: nil) }
+            let button = NSButton(title: item == .folder || item == .recording ? "Open folder" : "Settings…", target: nil, action: nil)
             button.tag = PermissionsReport.Item.allCases.firstIndex(of: item)!
             button.target = self; button.action = #selector(actionClicked(_:))
-            button.isHidden = item == .transcription && engine != .elevenLabs
+            button.isHidden = item == .transcription
             button.widthAnchor.constraint(equalToConstant: 112).isActive = true
             let row = NSStackView(views: [details, button]); row.spacing = 16; row.alignment = .top
             row.distribution = .fill
@@ -118,10 +113,8 @@ final class PermissionsWindowController: NSWindowController, NSWindowDelegate {
              remediation: "macOS has no passive check for Quill’s Core Audio tap permission. Screen access above does not verify audio access. Make a short test recording and check system.caf."))
         background(.folder) { [root] in PermissionsReport.folder(root) }
         if let recording { background(.recording) { PermissionsReport.recording(recording) } }
-        if !authorizing {
-            background(.transcription) { [engine, keychain] in
-                PermissionsReport.transcription(engine: engine, access: engine == .elevenLabs ? keychain.checkAccess() : .missing)
-            }
+        background(.transcription) { [engine, keyStore] in
+            PermissionsReport.transcription(engine: engine, access: engine == .elevenLabs ? keyStore.checkAccess() : .missing)
         }
         guard tasks[.notifications] == nil else { return }
         tasks[.notifications] = Task { [weak self] in
@@ -137,19 +130,10 @@ final class PermissionsWindowController: NSWindowController, NSWindowDelegate {
         }
     }
     private func background(_ item: PermissionsReport.Item, _ work: @escaping @Sendable () -> Check) {
-        guard tasks[item] == nil else {
-            if item == .transcription, engine == .elevenLabs, let since = started[item], Date().timeIntervalSince(since) > 5 {
-                labels[item]?.stringValue = "Still checking Keychain… Look for a macOS authorization prompt from another Quill operation, then approve or cancel it."
-                labels[item]?.textColor = .secondaryLabelColor
-            }
-            return
-        }
-        started[item] = Date()
-        if item == .transcription { authorizeButton.isEnabled = false }
+        guard tasks[item] == nil else { return }
         tasks[item] = Task { [weak self] in
             let check = await Task.detached(operation: work).value
-            self?.tasks[item] = nil; self?.started[item] = nil
-            if item == .transcription { self?.authorizeButton.isEnabled = true }
+            self?.tasks[item] = nil
             self?.set(item, check)
         }
     }
@@ -169,21 +153,6 @@ final class PermissionsWindowController: NSWindowController, NSWindowDelegate {
     @objc private func actionClicked(_ sender: NSButton) {
         let item = PermissionsReport.Item.allCases[sender.tag]
         if item == .folder || item == .recording { NSWorkspace.shared.open(item == .recording ? recording! : root); return }
-        if item == .transcription {
-            guard !authorizing, tasks[item] == nil else { return }
-            authorizing = true; authorizeButton.isEnabled = false
-            labels[item]?.stringValue = "Waiting for Keychain… Approve the macOS prompt or cancel it to continue."
-            Task { [weak self, keychain] in
-                let result = await Task.detached { () -> Check in
-                    do {
-                        let accessible = try keychain.authorizeAccess()
-                        return PermissionsReport.transcription(engine: .elevenLabs, access: accessible ? .available : .missing)
-                    } catch { return PermissionsReport.transcription(engine: .elevenLabs, access: .failed(String(describing: error))) }
-                }.value
-                self?.authorizing = false; self?.authorizeButton.isEnabled = true; self?.set(item, result)
-            }
-            return
-        }
         Task {
             switch item {
             case .microphone:

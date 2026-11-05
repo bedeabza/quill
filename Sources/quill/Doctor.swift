@@ -15,12 +15,12 @@ struct Check: Sendable {
 }
 
 enum DoctorReport {
-    static func run(recordingsRoot: URL, checkKeychain: Bool = true) -> [Check] {
+    static func run(recordingsRoot: URL, checkKey: Bool = true) -> [Check] {
         [
             checkMicrophone(),
             checkSystemAudio(),
             checkRecordingsRoot(recordingsRoot),
-            checkTranscription(checkKeychain: checkKeychain),
+            checkTranscription(checkKey: checkKey),
         ]
     }
 
@@ -78,7 +78,7 @@ enum DoctorReport {
 
     /// Never discover a missing model after an important meeting: report
     /// whether the selected engine and model are available.
-    static func checkTranscription(checkKeychain: Bool = true) -> Check {
+    static func checkTranscription(checkKey: Bool = true) -> Check {
         guard Config.transcriptionEnabled() else {
             return Check(
                 name: "transcription",
@@ -91,10 +91,10 @@ enum DoctorReport {
                          remediation: "choose an engine from Quill's Transcription engine menu")
         }
         if kind == .elevenLabs {
-            guard checkKeychain else {
+            guard checkKey else {
                 return Check(name: "transcription", status: .warn("ElevenLabs key will be checked before transcription"), remediation: nil)
             }
-            let saved = ElevenLabsKeychain.shared.containsKey()
+            let saved = ElevenLabsKeyStore.shared.containsKey()
             // Keep recording and the menu available while the user supplies a key.
             return Check(name: "transcription", status: saved ? .ok : .warn("ElevenLabs API key not saved"),
                          remediation: saved ? nil : "Quill menu > ElevenLabs API key...; recordings are retained until transcription is available")

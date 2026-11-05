@@ -136,7 +136,7 @@ struct Run: ParsableCommand {
 
         // Keep the menu and permissions checker available even when capture
         // access is denied. Existing recordings can still be transcribed.
-        let checks = DoctorReport.run(recordingsRoot: root, checkKeychain: false)
+        let checks = DoctorReport.run(recordingsRoot: root, checkKey: false)
         if !DoctorReport.allOK(checks) {
             FileHandle.standardError.write(Data("startup checks need attention — open Permissions & readiness from the Quill menu:\n".utf8))
             DoctorReport.print(checks)

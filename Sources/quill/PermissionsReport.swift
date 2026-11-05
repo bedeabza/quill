@@ -45,18 +45,16 @@ enum PermissionsReport {
         return folder(directory)
     }
 
-    static func transcription(engine: TranscriptionEngineKind, access: ElevenLabsKeychain.Access) -> Check {
+    static func transcription(engine: TranscriptionEngineKind, access: ElevenLabsKeyStore.Access) -> Check {
         guard engine == .elevenLabs else { return DoctorReport.checkLocalModel() }
         let note = "Account quota and speech-to-text permission are confirmed only when ElevenLabs accepts a transcription request."
         switch access {
         case .available:
             return Check(name: "ElevenLabs key", status: .ok, remediation: "Quill can read the saved key. " + note)
         case .missing:
-            return Check(name: "ElevenLabs key", status: .fail("No saved API key"), remediation: "Save a key using Quill → ElevenLabs API key…")
-        case .needsAuthorization:
-            return Check(name: "ElevenLabs key", status: .fail("Keychain approval or unlock required"), remediation: "Click Authorize key and approve the macOS prompt. " + note)
+            return Check(name: "ElevenLabs key", status: .fail("No saved API key"), remediation: "Save a key in Quill → Transcription.")
         case .failed(let message):
-            return Check(name: "ElevenLabs key", status: .fail(message), remediation: "Unlock your login keychain or update the saved key from the Quill menu.")
+            return Check(name: "ElevenLabs key", status: .fail(message), remediation: "Save the key again in Quill → Transcription.")
         }
     }
 }

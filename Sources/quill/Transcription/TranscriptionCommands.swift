@@ -10,11 +10,11 @@ struct Transcription: ParsableCommand {
 }
 
 struct TranscriptionStatus: ParsableCommand {
-    static let configuration = CommandConfiguration(commandName: "status", abstract: "Show the saved engine and Keychain credential status, without displaying the key.")
+    static let configuration = CommandConfiguration(commandName: "status", abstract: "Show the saved engine and credential status, without displaying the key.")
     func run() throws {
         let json: [String: Any] = ["engine": Config.transcriptionEngine(), "enabled": Config.transcriptionEnabled(),
             "cloud_audio": Config.transcriptionEngine() == "elevenlabs",
-            "elevenlabs_key_saved": ElevenLabsKeychain.shared.containsKey(), "credential_storage": "macOS Keychain",
+            "elevenlabs_key_saved": ElevenLabsKeyStore.shared.containsKey(), "credential_storage": ElevenLabsKeyStore.shared.url.path,
             "post_processing": Config.postProcessing().mode.rawValue]
         let data = try JSONSerialization.data(withJSONObject: json, options: [.prettyPrinted, .sortedKeys])
         print(String(decoding: data, as: UTF8.self))
@@ -25,7 +25,7 @@ struct TranscriptionConfigure: ParsableCommand {
     static let configuration = CommandConfiguration(commandName: "configure", abstract: "Choose the engine for future transcription jobs. ElevenLabs uploads audio to its cloud API.")
     @Option var engine: TranscriptionEngineKind
     func run() throws {
-        if engine == .elevenLabs && !ElevenLabsKeychain.shared.containsKey() {
+        if engine == .elevenLabs && !ElevenLabsKeyStore.shared.containsKey() {
             throw ValidationError("Save a key first with quill transcription key set or the Quill menu.")
         }
         guard Config.setTranscriptionEngine(engine) else { throw ValidationError("Could not save Quill's configuration.") }
@@ -34,7 +34,7 @@ struct TranscriptionConfigure: ParsableCommand {
 }
 
 struct TranscriptionKey: ParsableCommand {
-    static let configuration = CommandConfiguration(commandName: "key", abstract: "Manage the encrypted ElevenLabs API key in macOS Keychain.",
+    static let configuration = CommandConfiguration(commandName: "key", abstract: "Manage the ElevenLabs API key, stored in a file only your user account can read.",
         subcommands: [TranscriptionKeySet.self, TranscriptionKeyRemove.self])
 }
 
@@ -53,15 +53,15 @@ struct TranscriptionKeySet: ParsableCommand {
             key = String(cString: input)
             memset(input, 0, strlen(input))
         }
-        try ElevenLabsKeychain.shared.save(key)
-        print("ElevenLabs API key saved in macOS Keychain.")
+        try ElevenLabsKeyStore.shared.save(key)
+        print("ElevenLabs API key saved to \(ElevenLabsKeyStore.shared.url.path).")
     }
 }
 
 struct TranscriptionKeyRemove: ParsableCommand {
-    static let configuration = CommandConfiguration(commandName: "remove", abstract: "Remove the saved ElevenLabs API key from macOS Keychain.")
+    static let configuration = CommandConfiguration(commandName: "remove", abstract: "Remove the saved ElevenLabs API key.")
     func run() throws {
-        try ElevenLabsKeychain.shared.remove()
+        try ElevenLabsKeyStore.shared.remove()
         print("ElevenLabs API key removed. Select Parakeet or save another key to resume automatic transcription.")
     }
 }

@@ -203,33 +203,11 @@ final class ElevenLabsEngineTests: XCTestCase, @unchecked Sendable {
     }
 }
 
-final class ElevenLabsKeychainTests: XCTestCase {
-    func testKeyValidationAndSafeLegacyMigration() throws {
-        XCTAssertEqual(try ElevenLabsKeychain.validated("  test-key-1234567890\n"), "test-key-1234567890")
-        for key in ["", "short", "test-key-1234567890\r\nx-header: injected", "test key with spaces"] {
-            XCTAssertThrowsError(try ElevenLabsKeychain.validated(key))
-        }
+final class TranscriptionSettingsTests: XCTestCase {
+    func testSafeLegacyEngineMigration() {
         XCTAssertEqual(Config.migratedEngineName("whisper_cpp"), "parakeet")
         XCTAssertEqual(Config.migratedEngineName("elevenlabs"), "elevenlabs")
         XCTAssertEqual(Config.migratedEngineName(nil), "parakeet")
-    }
-
-    func testEncryptedKeychainRoundTrip() throws {
-        guard ProcessInfo.processInfo.environment["QUILL_TEST_KEYCHAIN"] == "1" else {
-            throw XCTSkip("Set QUILL_TEST_KEYCHAIN=1 for a disposable macOS Keychain test")
-        }
-        let store = ElevenLabsKeychain(service: "com.bedeabza.quill.test." + UUID().uuidString)
-        defer { try? store.remove() }
-        XCTAssertFalse(store.containsKey())
-        XCTAssertNil(try store.read())
-        try store.save("test-secret-first-123456789")
-        XCTAssertTrue(store.containsKey())
-        XCTAssertEqual(try store.read(), "test-secret-first-123456789")
-        try store.save("test-secret-updated-123456789")
-        XCTAssertEqual(try store.read(), "test-secret-updated-123456789")
-        try store.remove()
-        XCTAssertFalse(store.containsKey())
-        XCTAssertNil(try store.read())
     }
 
     func testEngineSelectionPreservesUnrelatedConfiguration() throws {

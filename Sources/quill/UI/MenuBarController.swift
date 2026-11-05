@@ -6,7 +6,7 @@ import AppKit
 /// without a dock icon.
 @MainActor
 final class MenuBarController: NSObject, NSMenuDelegate {
-    private let keychain: ElevenLabsKeychain
+    private let keyStore: ElevenLabsKeyStore
     private let statusItem: NSStatusItem
     private let stateLabel: NSMenuItem
     private let transcriptionLabel: NSMenuItem
@@ -34,8 +34,8 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     var onPermission: (() -> Void)?
     var onKeepRecording: (() -> Void)?
 
-    init(keychain: ElevenLabsKeychain = .shared) {
-        self.keychain = keychain
+    init(keyStore: ElevenLabsKeyStore = .shared) {
+        self.keyStore = keyStore
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
 
         let menu = NSMenu()
@@ -180,11 +180,9 @@ final class MenuBarController: NSObject, NSMenuDelegate {
 
     func menuWillOpen(_ menu: NSMenu) {
         voiceMemoryItem.state = Config.voiceMemoryEnabled() ? .on : .off
-        // Returning immediately keeps AppKit responsive if SecurityAgent is
-        // waiting for approval on another credential operation.
         if keyStatusTask == nil, !credentialOperationInProgress {
-            keyStatusTask = Task { [weak self, keychain] in
-                let hasKey = await Task.detached { [keychain] in keychain.containsKey() }.value
+            keyStatusTask = Task { [weak self, keyStore] in
+                let hasKey = await Task.detached { [keyStore] in keyStore.containsKey() }.value
                 guard let self else { return }
                 self.keyStatusTask = nil
                 guard !self.credentialOperationInProgress else { return }
@@ -209,7 +207,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
             defer { credentialOperationInProgress = false }
             let kind = TranscriptionEngineKind.allCases[sender.tag]
             if kind == .elevenLabs {
-                let hasKey = await Task.detached { [keychain] in keychain.containsKey() }.value
+                let hasKey = await Task.detached { [keyStore] in keyStore.containsKey() }.value
                 if !hasKey, !(await enterAPIKey()) { return }
             }
             guard Config.setTranscriptionEngine(kind) else {
@@ -234,7 +232,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         NSApp.activate(ignoringOtherApps: true)
         let alert = NSAlert()
         alert.messageText = "ElevenLabs API key"
-        alert.informativeText = "Your key is stored encrypted in macOS Keychain. Selecting ElevenLabs sends recording audio to Scribe v2 for transcription."
+        alert.informativeText = "Your key is stored in a file only your user account can read. Selecting ElevenLabs sends recording audio to Scribe v2 for transcription."
         alert.addButton(withTitle: "Save key")
         alert.addButton(withTitle: "Cancel")
         let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 360, height: 26))
@@ -248,8 +246,8 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         let value = field.stringValue
         field.stringValue = ""
         do {
-            try await Task.detached { [keychain] in try keychain.save(value) }.value
-            notifyUser(title: "Quill settings", body: "ElevenLabs API key saved in macOS Keychain.")
+            try await Task.detached { [keyStore] in try keyStore.save(value) }.value
+            notifyUser(title: "Quill settings", body: "ElevenLabs API key saved.")
             return true
         } catch {
             NSApp.activate(ignoringOtherApps: true)
@@ -267,7 +265,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         Task {
             defer { credentialOperationInProgress = false }
             do {
-                try await Task.detached { [keychain] in try keychain.remove() }.value
+                try await Task.detached { [keyStore] in try keyStore.remove() }.value
                 notifyUser(title: "Quill settings", body: "ElevenLabs API key removed. Select Parakeet or save another key to resume transcription.")
             } catch {
                 notifyUser(title: "Quill settings", body: String(describing: error))

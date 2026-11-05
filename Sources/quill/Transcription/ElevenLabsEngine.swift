@@ -14,7 +14,7 @@ actor ElevenLabsEngine: TranscriptionEngine {
     private let session: URLSession
     private var prepared = false
 
-    init(offline: Bool = false, keyProvider: @escaping @Sendable () throws -> String? = { try ElevenLabsKeychain.shared.read() },
+    init(offline: Bool = false, keyProvider: @escaping @Sendable () throws -> String? = { try ElevenLabsKeyStore.shared.read() },
          session: URLSession? = nil) {
         self.offline = offline
         self.keyProvider = keyProvider
@@ -30,7 +30,7 @@ actor ElevenLabsEngine: TranscriptionEngine {
     func prepare() async throws {
         guard !offline else { throw TranscriptionFailure("ElevenLabs requires uploading audio. Use --engine parakeet with --offline.") }
         guard let key = try keyProvider() else { throw TranscriptionFailure("Set your ElevenLabs API key from the Quill menu first.") }
-        _ = try ElevenLabsKeychain.validated(key)
+        _ = try ElevenLabsKeyStore.validated(key)
         prepared = true
     }
 
@@ -107,7 +107,7 @@ actor ElevenLabsEngine: TranscriptionEngine {
     }
 
     nonisolated static func request(key: String, boundary: String) throws -> URLRequest {
-        let key = try ElevenLabsKeychain.validated(key)
+        let key = try ElevenLabsKeyStore.validated(key)
         var request = URLRequest(url: URL(string: "https://api.elevenlabs.io/v1/speech-to-text")!)
         request.httpMethod = "POST"
         request.timeoutInterval = Self.requestTimeout
