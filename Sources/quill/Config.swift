@@ -21,15 +21,7 @@ enum Config {
     }
 
     @discardableResult static func setRecordingTitleMode(_ mode: PostProcessingMode) -> Bool {
-        let existing = load()
-        guard existing != nil || !FileManager.default.fileExists(atPath: path.path) else { return false }
-        var config = existing ?? [:]
-        config["recording_titles"] = ["mode": mode.rawValue]
-        do {
-            try FileManager.default.createDirectory(at: path.deletingLastPathComponent(), withIntermediateDirectories: true)
-            try JSONSerialization.data(withJSONObject: config, options: [.prettyPrinted, .sortedKeys]).write(to: path, options: .atomic)
-            return true
-        } catch { return false }
+        (try? update { $0["recording_titles"] = ["mode": mode.rawValue] }) != nil
     }
 
     static func postProcessing() -> PostProcessingOptions {
@@ -37,31 +29,17 @@ enum Config {
     }
 
     @discardableResult static func setPostProcessingMode(_ mode: PostProcessingMode) -> Bool {
-        let existing = load()
-        guard existing != nil || !FileManager.default.fileExists(atPath: path.path) else { return false }
-        var config = existing ?? [:]
-        var options = config["post_processing"] as? [String: Any] ?? [:]
-        options["mode"] = mode.rawValue
-        config["post_processing"] = options
-        do {
-            try FileManager.default.createDirectory(at: path.deletingLastPathComponent(), withIntermediateDirectories: true)
-            let data = try JSONSerialization.data(withJSONObject: config, options: [.prettyPrinted, .sortedKeys])
-            try data.write(to: path, options: .atomic)
-            return true
-        } catch { return false }
+        (try? update { config in
+            var options = config["post_processing"] as? [String: Any] ?? [:]
+            options["mode"] = mode.rawValue
+            config["post_processing"] = options
+        }) != nil
     }
 
     static func voiceMemoryEnabled() -> Bool { load()?["speaker_voice_memory"] as? Bool ?? true }
 
     static func setVoiceMemoryEnabled(_ enabled: Bool) throws {
-        let existing = load()
-        guard existing != nil || !FileManager.default.fileExists(atPath: path.path) else {
-            throw TranscriptionFailure("Could not read Quill configuration.")
-        }
-        var config = existing ?? [:]
-        config["speaker_voice_memory"] = enabled
-        try FileManager.default.createDirectory(at: path.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try JSONSerialization.data(withJSONObject: config, options: [.prettyPrinted, .sortedKeys]).write(to: path, options: .atomic)
+        try update { $0["speaker_voice_memory"] = enabled }
     }
 
     static func speakerDetection() -> Bool { load()?["speaker_detection"] as? Bool ?? true }
@@ -77,14 +55,8 @@ enum Config {
     static func meetingDetection() -> Bool { load()?["meeting_detection"] as? Bool ?? true }
 
     @discardableResult static func setMeetingDetection(_ enabled: Bool) -> Bool {
-        let existing = load()
-        guard existing != nil || !FileManager.default.fileExists(atPath: path.path) else { return false }
-        var config = existing ?? [:]
-        config["meeting_detection"] = enabled
         do {
-            try FileManager.default.createDirectory(at: path.deletingLastPathComponent(), withIntermediateDirectories: true)
-            let data = try JSONSerialization.data(withJSONObject: config, options: [.prettyPrinted, .sortedKeys])
-            try data.write(to: path, options: .atomic)
+            try update { $0["meeting_detection"] = enabled }
             return true
         } catch {
             FileHandle.standardError.write(Data("Could not save meeting detection setting: \(error)\n".utf8))
@@ -127,21 +99,26 @@ enum Config {
     }
 
     @discardableResult static func setTranscriptionEngine(_ engine: TranscriptionEngineKind, at url: URL = path) -> Bool {
-        do {
-            var config: [String: Any] = [:]
-            if FileManager.default.fileExists(atPath: url.path) {
-                let data = try Data(contentsOf: url)
-                guard let existing = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { return false }
-                config = existing
-            }
+        (try? update(at: url) { config in
             var options = config["transcription"] as? [String: Any] ?? [:]
             options["engine"] = engine.rawValue
             config["transcription"] = options
-            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-            let data = try JSONSerialization.data(withJSONObject: config, options: [.prettyPrinted, .sortedKeys])
-            try data.write(to: url, options: .atomic)
-            return true
-        } catch { return false }
+        }) != nil
+    }
+
+    /// Read-modify-write of the config file. An existing file that is not a
+    /// JSON object is never overwritten.
+    private static func update(at url: URL = path, _ change: (inout [String: Any]) -> Void) throws {
+        var config: [String: Any] = [:]
+        if FileManager.default.fileExists(atPath: url.path) {
+            guard let data = try? Data(contentsOf: url),
+                  let existing = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+            else { throw TranscriptionFailure("Could not read Quill configuration.") }
+            config = existing
+        }
+        change(&config)
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try JSONSerialization.data(withJSONObject: config, options: [.prettyPrinted, .sortedKeys]).write(to: url, options: .atomic)
     }
 
     private static func transcription() -> [String: Any]? {

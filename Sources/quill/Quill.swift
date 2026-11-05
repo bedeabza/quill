@@ -136,7 +136,7 @@ struct Run: ParsableCommand {
 
         // Keep the menu and permissions checker available even when capture
         // access is denied. Existing recordings can still be transcribed.
-        let checks = DoctorReport.run(recordingsRoot: root, checkKey: false)
+        let checks = DoctorReport.run(recordingsRoot: root, checkKey: true)
         if !DoctorReport.allOK(checks) {
             FileHandle.standardError.write(Data("startup checks need attention — open Permissions & readiness from the Quill menu:\n".utf8))
             DoctorReport.print(checks)
@@ -193,6 +193,7 @@ struct Doctor: ParsableCommand {
 @MainActor
 final class AppController: NSObject, NSApplicationDelegate {
     private let root: URL
+    let appState = AppState()
     private let menuBar = MenuBarController()
     private let transcription = TranscriptionCoordinator()
     private let meetings = MeetingAssistant()
@@ -214,16 +215,24 @@ final class AppController: NSObject, NSApplicationDelegate {
             self.permissionsWindow?.show()
         }
         menuBar.onQuit = { [weak self] in self?.shutdown() }
-        menuBar.update(recording: false, elapsed: nil)
+        showRecording(false, elapsed: nil)
         menuBar.onDetectionToggle = { [weak self] in self?.meetings.toggleEnabled() }
         menuBar.onPermission = { [weak self] in self?.meetings.requestPermission() }
         menuBar.onKeepRecording = { [weak self] in self?.meetings.keepRecording() }
+        appState.toggleRecording = { [weak self] in self?.toggle() }
+        appState.toggleDetection = { [weak self] in self?.meetings.toggleEnabled() }
+        appState.keepRecording = { [weak self] in self?.meetings.keepRecording() }
+        appState.requestMeetingPermission = { [weak self] in self?.meetings.requestPermission() }
         meetings.onStart = { [weak self] in
             guard let self, self.session == nil else { return false }
             return self.startSession()
         }
         meetings.onStop = { [weak self] in self?.stopSession() }
-        meetings.onStatus = { [weak self] text, enabled in self?.menuBar.updateDetection(text, enabled: enabled) }
+        meetings.onStatus = { [weak self] text, enabled in
+            self?.menuBar.updateDetection(text, enabled: enabled)
+            self?.appState.detectionText = text
+            self?.appState.detectionEnabled = enabled
+        }
         meetings.onSpeakers = { [weak self] observation in self?.session?.recordSpeakers(observation) }
         meetings.onMeeting = { [weak self] meeting in self?.session?.recordMeeting(meeting) }
         meetings.start()
@@ -269,7 +278,7 @@ final class AppController: NSObject, NSApplicationDelegate {
             return false
         }
 
-        menuBar.update(recording: true, elapsed: "0:00")
+        showRecording(true, elapsed: "0:00")
         ticker = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.tick() }
         }
@@ -288,7 +297,7 @@ final class AppController: NSObject, NSApplicationDelegate {
         meetings.recordingStopped()
         ticker?.invalidate()
         ticker = nil
-        menuBar.update(recording: false, elapsed: nil)
+        showRecording(false, elapsed: nil)
 
         let dir = session.dir
         Task { [transcription] in await transcription.enqueue(dir) }
@@ -296,26 +305,20 @@ final class AppController: NSObject, NSApplicationDelegate {
 
     private func showTranscription(_ status: TranscriptionCoordinator.Status) {
         recordingsWindow?.refresh()
-        switch status {
-        case .idle:
-            menuBar.updateTranscription(nil)
-        case .transcribing(let name, let queued):
-            menuBar.updateTranscription(
-                queued > 0 ? "transcribing \(name) · \(queued) queued" : "transcribing \(name)"
-            )
-        case .postprocessing(let name, let queued):
-            menuBar.updateTranscription(queued > 0 ? "cleaning transcript \(name) · \(queued) queued" : "cleaning transcript \(name)")
-        case .failed(let name):
-            menuBar.updateTranscription("transcription failed · \(name)")
-        }
+        let text = AppState.transcriptionText(status)
+        appState.transcriptionStatus = text
+        menuBar.updateTranscription(text)
     }
 
     private func tick() {
         guard let session else { return }
-        menuBar.update(
-            recording: true,
-            elapsed: Self.format(Date().timeIntervalSince(session.startedAt))
-        )
+        showRecording(true, elapsed: Self.format(Date().timeIntervalSince(session.startedAt)))
+    }
+
+    private func showRecording(_ recording: Bool, elapsed: String?) {
+        menuBar.update(recording: recording, elapsed: elapsed)
+        appState.recording = recording
+        appState.elapsed = elapsed
     }
 
     private func openFolder() {

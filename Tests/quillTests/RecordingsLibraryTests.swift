@@ -102,6 +102,37 @@ final class RecordingsLibraryTests: XCTestCase, @unchecked Sendable {
         XCTAssertTrue(try RecordingsLibrary.entries(in: directory.deletingLastPathComponent())[0].hasNamedTranscript)
     }
 
+    func testTranscriptMergesConsecutiveSpeakerSegmentsIntoTurns() throws {
+        let directory = try recording(in: root())
+        let fixture = #"""
+        {"engine": "elevenlabs", "model": "scribe_v2", "created_at": "fixture", "segments": [
+          {"speaker": "system_1", "speaker_name": "Alice", "start_ms": 1500, "end_ms": 3000, "text": "Hello."},
+          {"speaker": "system_1", "speaker_name": "Alice", "start_ms": 3000, "end_ms": 4000, "text": "Shall we start?"},
+          {"speaker": "me", "speaker_name": "Bob", "start_ms": 65000, "end_ms": 66000, "text": "Yes."},
+          {"speaker": "system_2", "start_ms": 3725000, "end_ms": 3726000, "text": "Me too."},
+          {"speaker": "system_1", "speaker_name": "Alice", "start_ms": 3727000, "end_ms": 3728000, "text": "Great."}
+        ]}
+        """#
+        try Data(fixture.utf8).write(to: directory.appendingPathComponent("transcript.json"))
+        XCTAssertEqual(try RecordingsLibrary.transcript(in: directory, named: false), .turns([
+            TranscriptTurn(id: 0, start: 1, speaker: "Alice", text: "Hello. Shall we start?"),
+            TranscriptTurn(id: 1, start: 65, speaker: "Bob", text: "Yes."),
+            TranscriptTurn(id: 2, start: 3725, speaker: "Speaker 2", text: "Me too."),
+            TranscriptTurn(id: 3, start: 3727, speaker: "Alice", text: "Great."),
+        ]))
+    }
+
+    func testTranscriptFallsBackToMarkdownThenToEmpty() throws {
+        let directory = try recording(in: root())
+        try FileManager.default.removeItem(at: directory.appendingPathComponent("transcript.json"))
+        try Data("# Weekly planning\n\nNotes".utf8).write(to: directory.appendingPathComponent("transcript.md"))
+        XCTAssertEqual(try RecordingsLibrary.transcript(in: directory, named: false), .text("# Weekly planning\n\nNotes"))
+        XCTAssertEqual(try RecordingsLibrary.transcript(in: directory, named: true), .empty("No verified named transcript is available."))
+        try FileManager.default.removeItem(at: directory.appendingPathComponent("transcript.md"))
+        XCTAssertEqual(try RecordingsLibrary.transcript(in: directory, named: false),
+                       .empty("No transcript yet. Select an engine and choose Regenerate to transcribe this recording."))
+    }
+
     func testBackupRestoresPriorOutputsAndRemovesNewArtifactsAfterFailure() throws {
         let directory = try recording(in: root())
         let original = try Data(contentsOf: directory.appendingPathComponent("transcript.json"))
