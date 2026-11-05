@@ -159,9 +159,13 @@ to the saved per-speaker reports of every recording in `~/Recordings` that has a
 | 2026.11.05-1121 (Meet) | yes | yes | 0.500 | none |
 | 2026.11.05-1341 (Teams) | no | no | 0.391 | none |
 | 2026.11.05-1346 (Teams) | no | no | 0.001 | false "Helen" on the user's voice now refused |
-| six others | no | no | — | none |
+| six others (1048, 1334, 1335, 11.04-2240, two delete-test copies) | no | no | — | none |
 
-No correct named copy is lost. The lowest coverage among correctly named
+The same result came end to end from the built app: `quill speakers refresh <dir>
+--output /tmp/quill-floor/<dir>` on all ten (cached Scribe diarization, no uploads)
+reproduced every saved mapping except 1346's false "Helen", now refused. The named
+copies of 1025 and 1121 came out identical segment for segment, and checksums of
+the 147 recording files were unchanged. No correct named copy is lost. The lowest coverage among correctly named
 speakers is 0.291 (Helen's 0.22-second "Ok." in 1346); in the two passing Meet
 calls it is 0.467. A regression replays the 1346 words, window and sample.
 
