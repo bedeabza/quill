@@ -1,5 +1,7 @@
 # Recording calendar and content titles
 
+> The month/day calendar was replaced by day groups in the Quill window; see [app-window-validation.md](app-window-validation.md). Content titles below still apply.
+
 Implemented November 2, 2026.
 
 ## Behavior
