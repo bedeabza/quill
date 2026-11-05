@@ -122,6 +122,16 @@ final class ParticipantRosterTests: XCTestCase {
         for timer in ["54:11", "01:07:30", "9:05", "--:--"] { XCTAssertNil(SpeakerAttribution.cleanName(timer)) }
         XCTAssertEqual(SpeakerAttribution.cleanName("Marian 2"), "Marian 2")
 
+        // Live capture 2026-11-05: the timer sits in the call control bar, which
+        // shares vdi-occlusion with name overlays. No text from that bar is a name.
+        let bar = [SpeakerUINode(parent: nil, role: "AXGroup", text: "", classes: ["fui-Flex", "vdi-occlusion"]),
+                   .init(parent: 0, role: "AXToolbar", text: "Calling indicators", classes: ["fui-Toolbar"]),
+                   .init(parent: 1, role: "AXGroup", text: "Elapsed time 00:02", classes: ["fui-Primitive"], subrole: "AXTimeGroup"),
+                   .init(parent: 2, role: "AXStaticText", text: "Noise suppressed", classes: [])]
+        XCTAssertEqual(ParticipantEvidence.members(bar + teams.map { node in
+            SpeakerUINode(parent: node.parent.map { $0 + bar.count }, role: node.role, text: node.text, classes: node.classes)
+        }, service: "Microsoft Teams", localName: "Dragos").map(\.name), ["Marian"])
+
         // Recordings saved before the fix display cleanly without being rewritten.
         let saved = #"{"audio_started_at":1000,"intervals":[],"participants":["#
             + #"{"name":"54:11","is_local":false,"first_seen":1000,"last_seen":1000,"sources":["meeting_roster"]},"#

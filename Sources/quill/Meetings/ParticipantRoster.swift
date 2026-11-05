@@ -147,6 +147,8 @@ enum ParticipantEvidence {
             }
         } else if service == "Microsoft Teams" {
             for index in nodes.indices where nodes[index].classes.contains("vdi-occlusion") {
+                // The call control bar shares the class; its texts are status, not people.
+                guard !nodes.indices.contains(where: { nodes[$0].role == "AXToolbar" && descendant($0, of: index) }) else { continue }
                 let names = nodes.indices.filter { nodes[$0].role == "AXStaticText" && descendant($0, of: index) && !nodes[$0].text.isEmpty }
                 if names.count == 1, let name = names.first { add(nodes[name].text) }
             }

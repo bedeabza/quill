@@ -290,7 +290,8 @@ membership observations in `speaker-observations.jsonl`. Names are collected fro
 meeting tiles independently of their speaking indicators. The scoped meeting tree
 is refreshed during the call, including background browser tabs, so silent people,
 late arrivals, and departures can be recorded. Known names survive missing UI data.
-Clock-like text such as a call timer (`--:--`, `54:11`, `01:07:30`) is never a name. Older
+Clock-like text such as a call timer (`--:--`, `54:11`, `01:07:30`) is never a name,
+and Teams' call control bar never contributes participant names. Older
 recordings that saved Teams timer ticks as participants are shown without them;
 their `participants.json` is not rewritten.
 The transcript and archive list participants before the spoken transcript, and the
