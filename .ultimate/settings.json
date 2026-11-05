@@ -1,0 +1,11 @@
+{
+  "isolates": {
+    "worktree": {
+      "setup": ["swift package resolve"]
+    }
+  },
+  "lander": {
+    "checks": [{ "command": "swift test", "timeout": 480 }],
+    "push": "origin"
+  }
+}
