@@ -269,6 +269,99 @@ final class RecordingsLibraryTests: XCTestCase, @unchecked Sendable {
         XCTAssertEqual(Config.transcriptionEngine(), before)
     }
 
+    /// A stand-in for the Trash so tests never touch ~/.Trash.
+    private func trash(in root: URL) throws -> (URL, @Sendable (URL) throws -> URL) {
+        let trash = root.appendingPathComponent(".Trash")
+        try FileManager.default.createDirectory(at: trash, withIntermediateDirectories: false)
+        return (trash, { url in
+            let destination = trash.appendingPathComponent(url.lastPathComponent)
+            try FileManager.default.moveItem(at: url, to: destination)
+            return destination
+        })
+    }
+
+    func testMoveToTrashMovesTheWholeFolderUnderTheProcessingLock() throws {
+        let root = try root()
+        let directory = try recording(in: root)
+        let backup = directory.appendingPathComponent("transcription-backup-old")
+        try FileManager.default.createDirectory(at: backup, withIntermediateDirectories: false)
+        try Data("saved response".utf8).write(to: directory.appendingPathComponent(MeetingAudio.cacheName))
+        let before = try FileManager.default.contentsOfDirectory(atPath: directory.path).sorted()
+        let (_, trash) = try trash(in: root)
+        let trashed = try RecordingsLibrary.moveToTrash(directory) { url in
+            XCTAssertThrowsError(try RecordingRegeneration(directory: url, freshCloud: false), "no job may start mid-move")
+            return try trash(url)
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: directory.path))
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: trashed.path).sorted(), (before + [".postprocess.lock"]).sorted())
+        XCTAssertTrue(try RecordingsLibrary.entries(in: root).isEmpty)
+
+        let busy = try recording(in: root, name: "busy")
+        let replacement = try RecordingRegeneration(directory: busy, freshCloud: false)
+        defer { replacement.unlock() }
+        XCTAssertThrowsError(try RecordingsLibrary.moveToTrash(busy, trash: trash)) { error in
+            XCTAssertTrue(String(describing: error).contains("Another Quill command is processing"))
+        }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: busy.appendingPathComponent("mic.caf").path))
+    }
+
+    @MainActor
+    func testDeleteRefusesRecordingQueuedAndProcessingRecordings() async throws {
+        let root = try root()
+        let processing = try recording(in: root, name: "2026.11.02-1000")
+        let queued = try recording(in: root, name: "2026.11.02-1100", started: "2026-11-02T09:00:00Z")
+        let recording = try recording(in: root, name: "2026.11.02-1200", started: "2026-11-02T10:00:00Z")
+        let (trashFolder, trash) = try trash(in: root)
+        let engine = LibraryTranscriptionStub(pause: 1_000_000_000)
+        let coordinator = TranscriptionCoordinator(makeEngine: { _, _ in engine }, trash: trash)
+        try await coordinator.regenerate(processing, engine: .elevenLabs)
+        try await coordinator.regenerate(queued, engine: .elevenLabs)
+        for _ in 0..<200 where await coordinator.activity()[processing] != .processing { try await Task.sleep(nanoseconds: 5_000_000) }
+        let model = RecordingsModel(root: root, transcription: coordinator, recordingDirectory: { recording })
+        model.refresh()
+        for _ in 0..<200 where model.entries.count < 3 { try await Task.sleep(nanoseconds: 10_000_000) }
+        let entries = Dictionary(uniqueKeysWithValues: model.entries.map { ($0.directory, $0) })
+        let recordingRefusal = await model.delete(entries[recording]!)
+        XCTAssertEqual(recordingRefusal, "It is being recorded. Stop the recording first.")
+        let processingRefusal = await model.delete(entries[processing]!)
+        XCTAssertEqual(processingRefusal, "It is being transcribed or processed. Delete it when that finishes.")
+        let queuedRefusal = await model.delete(entries[queued]!)
+        XCTAssertEqual(queuedRefusal, "It is queued for transcription. Delete it when that finishes.")
+        // The coordinator refuses on its own too, for callers working from a stale refresh.
+        do { _ = try await coordinator.moveToTrash(queued); XCTFail("A queued recording must not move") }
+        catch { XCTAssertTrue(String(describing: error).contains("queued")) }
+        XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: trashFolder.path).isEmpty)
+        XCTAssertEqual(model.entries.count, 3)
+        try await waitForJob(processing, coordinator: coordinator)
+        try await waitForJob(queued, coordinator: coordinator)
+    }
+
+    @MainActor
+    func testDeleteSelectsTheNextRecordingOrThePreviousAtTheEnd() async throws {
+        let root = try root()
+        let oldest = try recording(in: root, name: "2026.11.02-1000")
+        let middle = try recording(in: root, name: "2026.11.02-1100", started: "2026-11-02T09:00:00Z")
+        let newest = try recording(in: root, name: "2026.11.02-1200", started: "2026-11-02T10:00:00Z")
+        let (trashFolder, trash) = try trash(in: root)
+        let model = RecordingsModel(root: root, transcription: TranscriptionCoordinator(trash: trash))
+        model.refresh()
+        for _ in 0..<200 where model.entries.count < 3 { try await Task.sleep(nanoseconds: 10_000_000) }
+        XCTAssertEqual(model.selection, newest)
+        model.selection = middle
+        let first = await model.delete(model.selectedEntry!)
+        XCTAssertNil(first)
+        XCTAssertEqual(model.selection, oldest, "the next row, which is older, is selected")
+        XCTAssertEqual(model.entries.map(\.directory), [newest, oldest])
+        let second = await model.delete(model.selectedEntry!)
+        XCTAssertNil(second)
+        XCTAssertEqual(model.selection, newest, "at the end, the previous row is selected")
+        try await Task.sleep(nanoseconds: 300_000_000) // A scan started before the delete must not bring the row back.
+        XCTAssertEqual(model.entries.map(\.directory), [newest])
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: trashFolder.path).sorted(),
+                       [oldest.lastPathComponent, middle.lastPathComponent])
+        XCTAssertEqual(RecordingsModel.selection(afterDeleting: newest, in: [newest]), nil)
+    }
+
     func testLocalRegenerationRequiresAllTracksInsteadOfPublishingPartialTranscript() async throws {
         let directory = try recording(in: root())
         try Data("remote audio".utf8).write(to: directory.appendingPathComponent("system.caf"))

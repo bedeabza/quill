@@ -32,6 +32,7 @@ actor TranscriptionCoordinator {
     private var engine: TranscriptionEngine?
     private var engineOffline = false
     private let makeEngine: @Sendable (TranscriptionEngineKind, Bool) -> any TranscriptionEngine
+    private let trash: @Sendable (URL) throws -> URL
     private var lastFailure: String?
     private var statusHandler: (@Sendable (Status) -> Void)?
 
@@ -40,8 +41,9 @@ actor TranscriptionCoordinator {
         case .parakeet: return ParakeetEngine()
         case .elevenLabs: return ElevenLabsEngine(offline: offline)
         }
-    }) {
+    }, trash: @escaping @Sendable (URL) throws -> URL = RecordingsLibrary.systemTrash) {
         self.makeEngine = makeEngine
+        self.trash = trash
     }
 
     func setStatusHandler(_ handler: @escaping @Sendable (Status) -> Void) {
@@ -71,6 +73,21 @@ actor TranscriptionCoordinator {
         failures.removeValue(forKey: directory)
         queue.append(Job(directory: directory, engine: engine, regenerate: true, freshCloud: freshCloud && engine == .elevenLabs))
         drainIfIdle()
+    }
+
+    /// Moves a recording folder to the Trash unless it is queued or being
+    /// processed. Runs without suspending, so no job can be queued meanwhile.
+    func moveToTrash(_ sessionDir: URL) throws -> URL {
+        let directory = RecordingsLibrary.canonicalDirectory(sessionDir)
+        if activeDirectory == directory {
+            throw TranscriptionFailure("It is being transcribed or processed. Delete it when that finishes.")
+        }
+        if queue.contains(where: { $0.directory == directory }) {
+            throw TranscriptionFailure("It is queued for transcription. Delete it when that finishes.")
+        }
+        let trashed = try RecordingsLibrary.moveToTrash(directory, trash: trash)
+        failures.removeValue(forKey: directory)
+        return trashed
     }
 
     func activity() -> [URL: Activity] {

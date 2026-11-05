@@ -310,7 +310,8 @@ final class AppController: NSObject, NSApplicationDelegate {
     private func showWindow(_ section: QuillSection) {
         if window == nil {
             window = QuillWindowController(appState: appState,
-                                           recordings: RecordingsModel(root: root, transcription: transcription),
+                                           recordings: RecordingsModel(root: root, transcription: transcription,
+                                                                       recordingDirectory: { [weak self] in self?.session?.dir }),
                                            permissions: PermissionsModel(root: root),
                                            settings: SettingsModel(appState: appState))
         }

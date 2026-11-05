@@ -141,6 +141,16 @@ exists, selecting the recording opens on **With names**; switching to
 folder. The folder menu in the footer browses another recordings folder and
 returns to the default one.
 
+**Delete…** in a recording's right-click menu, or Delete (⌫) on the selected
+recording, asks for confirmation naming its title, date and time, then moves the
+whole recording folder to the Trash: audio, transcripts, cached ElevenLabs
+responses and regeneration backups. Nothing is erased permanently; **Put Back**
+in the Trash restores it. Quill refuses to delete the recording in progress or
+one that is queued, transcribing, regenerating or being post-processed, and
+holds the recording's processing lock while it moves, so no job can start on it
+meanwhile. The next recording is selected afterwards. Voice fingerprints learned
+from a deleted recording stay in voice memory.
+
 Titles are generated from meeting content for recordings visible in the list
 and saved separately in `recording-title.json`; original transcript
 headers/text remain unchanged. **Meeting titles** in **Quill → Transcription**

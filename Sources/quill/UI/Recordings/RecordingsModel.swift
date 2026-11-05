@@ -82,19 +82,25 @@ final class RecordingsModel {
 
     @ObservationIgnored private let transcription: TranscriptionCoordinator
     @ObservationIgnored private let titles: RecordingTitleCoordinator
+    @ObservationIgnored private let recordingDirectory: @MainActor () -> URL?
     @ObservationIgnored private var refreshTask: Task<Void, Never>?
     @ObservationIgnored private var timer: Timer?
     @ObservationIgnored private var preferredSelection: URL?
+    /// Bumped by `delete`, so a scan that started before it is not shown.
+    @ObservationIgnored private var generation = 0
     @ObservationIgnored private var appeared: Set<URL> = []
     @ObservationIgnored private var transcriptSignature: String?
     @ObservationIgnored private var transcriptRequest = UUID()
 
-    init(root: URL, transcription: TranscriptionCoordinator, titles: RecordingTitleCoordinator = .shared) {
+    /// `recordingDirectory` is the folder of the recording in progress, if any.
+    init(root: URL, transcription: TranscriptionCoordinator, titles: RecordingTitleCoordinator = .shared,
+         recordingDirectory: @escaping @MainActor () -> URL? = { nil }) {
         let root = RecordingsLibrary.canonicalDirectory(root)
         self.root = root
         self.defaultRoot = root
         self.transcription = transcription
         self.titles = titles
+        self.recordingDirectory = recordingDirectory
     }
 
     // MARK: Lifecycle
@@ -112,14 +118,14 @@ final class RecordingsModel {
 
     func refresh() {
         guard refreshTask == nil else { return }
-        let requestedRoot = root
+        let requestedRoot = root, requestedGeneration = generation
         refreshTask = Task { [weak self, transcription, titles] in
             let states = await transcription.activity()
             let titleStates = await titles.busy()
             let result = await Task.detached(priority: .utility) { Result { try RecordingsLibrary.entries(in: requestedRoot) } }.value
             guard let self else { return }
             self.refreshTask = nil
-            guard self.root == requestedRoot else { self.refresh(); return }
+            guard self.root == requestedRoot, self.generation == requestedGeneration else { self.refresh(); return }
             self.activity = states
             self.titleBusy = titleStates
             switch result {
@@ -181,6 +187,35 @@ final class RecordingsModel {
     }
 
     func showInFinder(_ entry: RecordingEntry) { NSWorkspace.shared.open(entry.directory) }
+
+    /// Why `entry` cannot be deleted right now, judged from the last refresh;
+    /// nil when it can. `delete` checks again before moving anything.
+    func deletionRefusal(_ entry: RecordingEntry) -> String? {
+        if let recording = recordingDirectory(), RecordingsLibrary.canonicalDirectory(recording) == entry.directory {
+            return "It is being recorded. Stop the recording first."
+        }
+        switch activity[entry.directory] {
+        case .processing: return "It is being transcribed or processed. Delete it when that finishes."
+        case .queued: return "It is queued for transcription. Delete it when that finishes."
+        default: return nil
+        }
+    }
+
+    /// Moves the recording's folder to the Trash, then selects the next row (or
+    /// the previous one at the end). Returns why it was refused or failed.
+    func delete(_ entry: RecordingEntry) async -> String? {
+        if let refusal = deletionRefusal(entry) { return refusal }
+        do { _ = try await transcription.moveToTrash(entry.directory) }
+        catch { refresh(); return (error as? TranscriptionFailure)?.description ?? error.localizedDescription }
+        if selection == entry.directory {
+            preferredSelection = Self.selection(afterDeleting: entry.directory, in: sections.flatMap(\.entries).map(\.directory))
+        }
+        generation += 1
+        entries.removeAll { $0.directory == entry.directory }
+        rebuild()
+        refresh()
+        return nil
+    }
 
     /// Browse `url` (from an NSOpenPanel). A recording folder opens its parent
     /// with that recording selected.
@@ -273,6 +308,13 @@ final class RecordingsModel {
             }
             return DaySection(day: day, title: title, entries: sorted)
         }
+    }
+
+    /// The recording to select after `deleted` leaves `visible`: the next one,
+    /// or the previous one when it was last.
+    static func selection(afterDeleting deleted: URL, in visible: [URL]) -> URL? {
+        guard let index = visible.firstIndex(of: deleted) else { return nil }
+        return index + 1 < visible.count ? visible[index + 1] : index > 0 ? visible[index - 1] : nil
     }
 
     static func status(_ entry: RecordingEntry, _ activity: TranscriptionCoordinator.Activity?) -> RecordingStatus {

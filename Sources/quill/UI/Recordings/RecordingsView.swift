@@ -101,6 +101,32 @@ private struct FolderActions: View {
     if let window = NSApp.keyWindow { panel.beginSheetModal(for: window, completionHandler: finish) } else { finish(panel.runModal()) }
 }
 
+/// Asks before moving a recording's folder to the Trash; explains a refusal.
+@MainActor func confirmDelete(_ entry: RecordingEntry, model: RecordingsModel) {
+    func present(_ alert: NSAlert, _ finish: @escaping (NSApplication.ModalResponse) -> Void = { _ in }) {
+        if let window = NSApp.keyWindow { alert.beginSheetModal(for: window, completionHandler: finish) } else { finish(alert.runModal()) }
+    }
+    func refuse(_ reason: String) {
+        let alert = NSAlert()
+        alert.messageText = "Can’t Delete “\(entry.title)”"
+        alert.informativeText = reason
+        present(alert)
+    }
+    if let refusal = model.deletionRefusal(entry) { return refuse(refusal) }
+    let alert = NSAlert()
+    alert.alertStyle = .warning
+    alert.messageText = "Delete “\(entry.title)”?"
+    alert.informativeText = RecordingFormat.when(entry) + "\n\nAll of its files move to the Trash: audio, transcripts, "
+        + "cached ElevenLabs responses and backups. You can put it back from the Trash."
+    // The first button is the default, so Return cancels.
+    alert.addButton(withTitle: "Cancel")
+    alert.addButton(withTitle: "Delete").hasDestructiveAction = true
+    present(alert) { response in
+        guard response == .alertSecondButtonReturn else { return }
+        Task { if let failure = await model.delete(entry) { refuse(failure) } }
+    }
+}
+
 // MARK: - List
 
 private struct RecordingList: View {
@@ -120,6 +146,14 @@ private struct RecordingList: View {
             }
         }
         .listStyle(.inset)
+        .contextMenu(forSelectionType: URL.self) { selected in
+            if let entry = selected.first.flatMap(entry) {
+                Button("Show in Finder") { model.showInFinder(entry) }
+                Divider()
+                Button("Delete…") { confirmDelete(entry, model: model) }
+            }
+        }
+        .onDeleteCommand { if let entry = model.selectedEntry { confirmDelete(entry, model: model) } }
         .overlay {
             if model.sections.isEmpty { ContentUnavailableView.search(text: model.query) }
         }
@@ -158,6 +192,8 @@ private struct RecordingList: View {
         }
         .background(.bar)
     }
+
+    private func entry(_ directory: URL) -> RecordingEntry? { model.entries.first { $0.directory == directory } }
 
     private var count: String {
         let total = model.entries.count

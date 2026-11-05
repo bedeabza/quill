@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 
 struct RecordingEntry: Sendable {
@@ -65,6 +66,25 @@ enum RecordingsLibrary {
                     || fm.fileExists(atPath: directory.appendingPathComponent("transcript-named.md").path), canRegenerate: ready,
                 endedAt: ended, titleSource: generated?.source, originalTitle: meta?.meetingTitle)
         }.sorted { $0.startedAt == $1.startedAt ? $0.directory.lastPathComponent > $1.directory.lastPathComponent : $0.startedAt > $1.startedAt }
+    }
+
+    /// Moves the whole recording folder to the Trash while holding the lock
+    /// that transcription, regeneration and the speaker commands take, so none
+    /// of them can start on it mid-move. Returns where the folder went.
+    static func moveToTrash(_ directory: URL, trash: (URL) throws -> URL = systemTrash) throws -> URL {
+        let lock = open(directory.appendingPathComponent(".postprocess.lock").path, O_CREAT | O_RDWR | O_CLOEXEC, 0o600)
+        guard lock >= 0 else { throw TranscriptionFailure("Could not lock this recording. Open its folder to inspect it.") }
+        defer { flock(lock, LOCK_UN); close(lock) }
+        guard flock(lock, LOCK_EX | LOCK_NB) == 0 else {
+            throw TranscriptionFailure("Another Quill command is processing this recording. Try again when it finishes.")
+        }
+        return try trash(directory)
+    }
+
+    static func systemTrash(_ url: URL) throws -> URL {
+        var trashed: NSURL?
+        try FileManager.default.trashItem(at: url, resultingItemURL: &trashed)
+        return (trashed as URL?) ?? url
     }
 
     static func parseDate(_ text: String) -> Date? {
