@@ -18,6 +18,10 @@ Quill is a native macOS meeting recorder (Swift, SwiftPM). Work in your worktree
 - **Deploy every app change:** before `workspace submit`, run `sh tools/deploy-app.sh` from your worktree (it
   installs to `~/Applications/Quill.app` and relaunches Quill), then check the relaunched app works: open its window
   and screenshot what you changed.
+- **Driving the real app shares Dragos's live desktop:** he is using the Mac while you test. Before every synthetic
+  click or key, confirm Quill is frontmost and read its window's current bounds (deploys and relaunches move it), and
+  aim only inside them; otherwise stop. Never send keys or clicks blind, and screenshot before acting. Any input that
+  might have reached another app goes in your report: when, where, and what to check.
 - **Live validation is the user's:** recording, Accessibility-based meeting detection, speaker tiles in real calls,
   Keychain prompts and notifications cannot be exercised from a worktree. Cover what you can with unit tests and
   fixtures, never start real recordings or upload audio, and end your report with a short checklist of the live checks
