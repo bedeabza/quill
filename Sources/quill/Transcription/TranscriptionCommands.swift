@@ -26,7 +26,7 @@ struct TranscriptionConfigure: ParsableCommand {
     @Option var engine: TranscriptionEngineKind
     func run() throws {
         if engine == .elevenLabs && !ElevenLabsKeyStore.shared.containsKey() {
-            throw ValidationError("Save a key first with quill transcription key set or the Quill menu.")
+            throw ValidationError("Save a key first with quill transcription key set or in Quill → Transcription.")
         }
         guard Config.setTranscriptionEngine(engine) else { throw ValidationError("Could not save Quill's configuration.") }
         print("\(engine.title) will be used for the next transcription.")

@@ -88,7 +88,7 @@ enum DoctorReport {
         }
         guard let kind = TranscriptionEngineKind(rawValue: Config.transcriptionEngine()) else {
             return Check(name: "transcription", status: .fail("unknown engine: \(Config.transcriptionEngine())"),
-                         remediation: "choose an engine from Quill's Transcription engine menu")
+                         remediation: "choose an engine in Quill → Transcription")
         }
         if kind == .elevenLabs {
             guard checkKey else {
@@ -97,7 +97,7 @@ enum DoctorReport {
             let saved = ElevenLabsKeyStore.shared.containsKey()
             // Keep recording and the menu available while the user supplies a key.
             return Check(name: "transcription", status: saved ? .ok : .warn("ElevenLabs API key not saved"),
-                         remediation: saved ? nil : "Quill menu > ElevenLabs API key...; recordings are retained until transcription is available")
+                         remediation: saved ? nil : "save a key in Quill → Transcription; recordings are retained until transcription is available")
         }
         return checkLocalModel()
     }

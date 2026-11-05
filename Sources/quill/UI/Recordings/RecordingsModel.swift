@@ -156,6 +156,13 @@ final class RecordingsModel {
         }
     }
 
+    /// Starts each Regenerate sheet from the current default engine, so a default
+    /// changed in Transcription settings is not overridden by an older choice.
+    func prepareRegenerate() {
+        regenerateEngine = TranscriptionEngineKind(rawValue: Config.transcriptionEngine()) ?? .parakeet
+        freshCloud = false
+    }
+
     /// Queues the selected recording with `regenerateEngine` and `freshCloud`.
     func regenerate() {
         guard let entry = selectedEntry, canRegenerate else { return }

@@ -117,20 +117,21 @@ a Settings group: **Transcription**, **Meetings**, **Permissions** and
 **Meetings** holds the automatic meeting recording toggle with its live status,
 an explanation of **Keep Recording After Meeting Ends** (a one-off action in the
 menu while recording), and **Remember speaker voices**. **General** shows the recordings folder with **Show in
-Finder**, **Open config file**, the version, and **Quit Quill**.
+Finder**, the configuration file with **Open** (or **Show Folder** before the
+file exists), the version, and **Quit Quill**.
 
 **Recordings** lists recording folders newest first, grouped by day: **Today**,
 **Yesterday**, then dates; days from another year show the year. Toolbar search
 matches generated and original meeting titles, folder names and participants.
 Each row shows the title, time, duration and participants. A tag marks
-recordings that are **Transcribing**, **Queued**, **Failed** or **Not
-transcribed**; ready recordings have no tag. Queued, transcribing and failed
+recordings that are **Transcribing**, **Queued**, **Failed**, **Not
+transcribed** or **Unfinished**; ready recordings have no tag. Queued, transcribing and failed
 messages appear in a banner.
 
 Selecting a recording shows its title with **Generate Title** or **Refresh
 Title**, date and time, participants, and the transcript as speaker turns with
-timestamps. The **Original / With names** switch appears only when a verified
-named transcript exists. **Show in Finder** in the toolbar opens the recording
+timestamps. The **Original / With names** switch appears for transcribed
+recordings and is disabled unless a verified named transcript exists. **Show in Finder** in the toolbar opens the recording
 folder. The folder menu in the footer browses another recordings folder and
 returns to the default one.
 

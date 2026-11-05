@@ -32,12 +32,17 @@ Settings group: **Transcription**, **Meetings**, **Permissions**, **General**.
   year show the year. The month/day tree of the old browser is gone.
 - Toolbar search matches title, original title, folder name and participants.
 - Each row shows title, time, duration and participants, plus a status tag:
-  **Transcribing**, **Queued**, **Failed** or **Not transcribed**. Ready rows
+  **Transcribing**, **Queued**, **Failed**, **Not transcribed** or
+  **Unfinished**. Ready rows
   show no tag. Queued, transcribing and failed messages appear in a banner.
 - The detail pane shows the title with **Generate Title** / **Refresh Title**,
-  date and time, participants, the **Original / With names** switch (With names
-  only when a verified named transcript exists), and the transcript as speaker
+  date and time, participants, the **Original / With names** switch (disabled
+  unless a verified named transcript exists), and the transcript as speaker
   turns with timestamps.
+- Each Regenerate sheet starts from the current default engine.
+- Dropped from the old browser: double-clicking a row to open its folder (use
+  **Show in Finder**), the **Refresh** button (the list refreshes every 2 s while
+  visible), and the exact start/end tooltip on rows.
 - Toolbar: **Show in Finder** and **Regenerate…**. The sheet chooses the engine
   for this run only; the default does not change. **Request a new ElevenLabs
   transcript** appears for ElevenLabs only. The sheet keeps the notes "One
@@ -76,8 +81,9 @@ while recording), and Remember speaker voices.
   button are gone.
 - Refreshing records nothing, uploads nothing and prompts for nothing.
 
-**General**: the recordings folder with **Show in Finder**, **Open config
-file**, the version, and **Quit Quill**.
+**General**: the recordings folder with **Show in Finder**, the configuration
+file with **Open** (or **Show Folder** before the file exists), the version, and
+**Quit Quill**.
 
 ### ElevenLabs key file
 

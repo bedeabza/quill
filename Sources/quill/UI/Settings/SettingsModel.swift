@@ -19,11 +19,15 @@ final class SettingsModel {
         get { storedEngine }
         set {
             guard newValue != storedEngine else { return }
+            // Re-assigning the stored value notifies observers, so a refused choice
+            // snaps the picker back instead of showing a value that was not saved.
             if newValue == .elevenLabs {
                 keyState = Self.keyState(keyStore.checkAccess())
-                guard keyState == .saved else { message = "Save an ElevenLabs API key first."; return }
+                guard keyState == .saved else { message = "Save an ElevenLabs API key first."; storedEngine = storedEngine; return }
             }
-            guard Config.setTranscriptionEngine(newValue) else { message = "Could not save the transcription engine setting."; return }
+            guard Config.setTranscriptionEngine(newValue) else {
+                message = "Could not save the transcription engine setting."; storedEngine = storedEngine; return
+            }
             storedEngine = newValue
             message = nil
         }
@@ -34,7 +38,9 @@ final class SettingsModel {
         get { storedCleanup }
         set {
             guard newValue != storedCleanup else { return }
-            guard Config.setPostProcessingMode(newValue) else { message = "Could not save the transcript cleanup setting."; return }
+            guard Config.setPostProcessingMode(newValue) else {
+                message = "Could not save the transcript cleanup setting."; storedCleanup = storedCleanup; return
+            }
             storedCleanup = newValue
             message = nil
         }
@@ -45,7 +51,9 @@ final class SettingsModel {
         get { storedTitleMode }
         set {
             guard newValue != storedTitleMode else { return }
-            guard Config.setRecordingTitleMode(newValue) else { message = "Could not save the title setting."; return }
+            guard Config.setRecordingTitleMode(newValue) else {
+                message = "Could not save the title setting."; storedTitleMode = storedTitleMode; return
+            }
             storedTitleMode = newValue
             message = nil
         }
@@ -57,7 +65,7 @@ final class SettingsModel {
         set {
             guard newValue != storedVoiceMemory else { return }
             do { try Config.setVoiceMemoryEnabled(newValue) }
-            catch { message = "Could not save the speaker memory setting: \(error)"; return }
+            catch { message = "Could not save the speaker memory setting: \(error)"; storedVoiceMemory = storedVoiceMemory; return }
             storedVoiceMemory = newValue
             message = nil
         }
@@ -84,6 +92,7 @@ final class SettingsModel {
 
     /// Re-reads every setting and the key state, e.g. when the section appears.
     func reload() {
+        message = nil
         storedEngine = TranscriptionEngineKind(rawValue: Config.transcriptionEngine()) ?? .parakeet
         storedCleanup = Config.postProcessing().mode
         storedTitleMode = Config.recordingTitleMode()

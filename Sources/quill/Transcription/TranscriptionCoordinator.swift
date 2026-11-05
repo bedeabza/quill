@@ -319,7 +319,7 @@ actor TranscriptionCoordinator {
 
     private func preparedEngine(kind override: TranscriptionEngineKind?, offline: Bool) async throws -> TranscriptionEngine {
         guard let kind = override ?? TranscriptionEngineKind(rawValue: Config.transcriptionEngine()) else {
-            throw TranscriptionFailure("Unknown transcription engine: \(Config.transcriptionEngine()). Choose an engine from the Quill menu.")
+            throw TranscriptionFailure("Unknown transcription engine: \(Config.transcriptionEngine()). Choose an engine in Quill → Transcription.")
         }
         if let engine, engine.name == kind.rawValue, engineOffline == offline { return engine }
         await engine?.release()

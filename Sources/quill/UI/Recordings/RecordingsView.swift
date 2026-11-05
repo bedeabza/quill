@@ -28,6 +28,9 @@ struct RecordingsView: View {
             .sheet(isPresented: $regenerating) {
                 if let entry = model.selectedEntry { RegenerateSheet(model: model, entry: entry) }
             }
+            .onChange(of: regenerating) { _, opening in if opening { model.prepareRegenerate() } }
+            // A sheet without its recording has nothing to regenerate and no way to cancel.
+            .onChange(of: model.selectedEntry?.directory) { _, directory in if directory == nil { regenerating = false } }
     }
 
     @ViewBuilder private var content: some View {
