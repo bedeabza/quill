@@ -119,7 +119,7 @@ final class ParticipantRosterTests: XCTestCase {
                      .init(parent: nil, role: "AXGroup", text: "", classes: ["vdi-occlusion"]),
                      .init(parent: 2, role: "AXStaticText", text: "Marian", classes: [])]
         XCTAssertEqual(ParticipantEvidence.members(teams, service: "Microsoft Teams", localName: "Dragos").map(\.name), ["Marian"])
-        for timer in ["54:11", "01:07:30", "9:05"] { XCTAssertNil(SpeakerAttribution.cleanName(timer)) }
+        for timer in ["54:11", "01:07:30", "9:05", "--:--"] { XCTAssertNil(SpeakerAttribution.cleanName(timer)) }
         XCTAssertEqual(SpeakerAttribution.cleanName("Marian 2"), "Marian 2")
 
         // Recordings saved before the fix display cleanly without being rewritten.

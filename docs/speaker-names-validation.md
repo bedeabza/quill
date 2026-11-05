@@ -97,12 +97,17 @@ uploading audio:
   honestly, so the gate is unchanged.
 
 The Teams roster also saved the call timer as a new participant on every scan
-(727 entries such as `54:11`). It never voted for names: tile names came only
+(727 entries such as `54:11`; 32 saved recordings since September 30 have such
+entries, up to 3358 in one, including the `--:--` placeholder). It never voted for names: tile names came only
 from remote tiles, and Teams exposes no participant count, so rosters were never
 complete. Clock-like names are now rejected everywhere, and saved rosters drop
 them when read. A preview refresh of that recording lists only the three real
 participants, with an identical speaker mapping and transcript; the recording's
 files were not modified.
+
+Other non-name Teams texts remain in some rosters (`Participants`, `Noise suppressed`,
+`5 minutes left in your meeting.`); restricting the Teams roster to call tiles needs
+a live capture first.
 
 Still to verify live: whether Teams exposes the self tile's speaking state
 (`quill meetings --speakers --speaker-boxes --watch` while speaking and silent),

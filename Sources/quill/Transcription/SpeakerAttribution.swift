@@ -45,8 +45,8 @@ enum SpeakerAttribution {
               !name.contains(where: { $0.isNewline || $0.asciiValue.map { $0 < 32 } == true }),
               !["you", "me", "unknown", "speaker", "someone", "them"].contains(name.lowercased()),
               !name.lowercased().hasSuffix("(you)"),
-              // Teams exposes its call timer (54:11, 01:07:30) like a name.
-              name.range(of: #"^\d{1,2}(:\d{2}){1,2}$"#, options: .regularExpression) == nil else { return nil }
+              // Teams exposes its call timer (--:--, 54:11, 01:07:30) like a name.
+              name.range(of: #"^(\d{1,2}|--)(:(\d{2}|--)){1,2}$"#, options: .regularExpression) == nil else { return nil }
         return name
     }
 
