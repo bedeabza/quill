@@ -208,7 +208,7 @@ Each session lands in `~/Recordings/<yyyy.MM.dd-HHmm>/`:
 | `meeting-audio.wav` | ElevenLabs only: one aligned 16 kHz mono recording, with playback-reference echo reduction before mixing |
 | `meeting-audio.json` | preparation version, original checksums/offsets, combined checksum, duration, energy diagnostics and conservative source windows |
 | `elevenlabs-meeting-audio.wav.json` | cached Scribe response for the combined recording |
-| `transcript-named.json`, `transcript-named.md` | ElevenLabs only: a separate named copy, created only when every combined speaker passes the 95% timeline agreement threshold |
+| `transcript-named.json`, `transcript-named.md` | ElevenLabs only: a separate named copy, created only when every combined speaker passes the 95% timeline agreement threshold with evidence covering at least 25% of their speech |
 | `speaker-mapping.json` | ElevenLabs only: per-speaker agreement, observed speech coverage, ambiguity and acceptance decision |
 | `transcribe.log` | transcription progress/errors for this session |
 
@@ -331,8 +331,10 @@ UI evidence. A name must account for at least 95% of that speaker's **observed
 speech duration**, and **every speaker must pass** before Quill writes
 `transcript-named.json` and `transcript-named.md`. No evidence or an unknown
 provider speaker fails the check. Time without observations is excluded from
-the denominator; `speaker-mapping.json` also reports coverage so that 100%
-agreement is not mistaken for 100% observation. Duplicated evidence counts once;
+the agreement denominator, but the observed evidence must cover at least 25% of
+that speaker's speech: a few milliseconds of one name never count as 100%
+agreement for a whole voice. `speaker-mapping.json` reports agreement and coverage
+for each speaker. Duplicated evidence counts once;
 conflicting names and overlapping provider voices count as ambiguity. Caption
 text, participant lists and saved voice fingerprints do not vote for names.
 The named copy changes names and attribution only, retaining speaker IDs,
@@ -373,10 +375,13 @@ Brave; other browsers need live validation.
 
 Teams desktop uses its accessible participant names and speaking-frame state.
 This was checked in a two-person call with captions off. Unknown layouts and
-explicitly pinned tiles do not contribute names. Your own Teams tile is not read
-yet, so a combined Teams recording has no local speaking evidence and does not
-get a named copy. Teams also lights a remote person's frame for background sound
-on an open microphone; while two frames are lit, that time counts as ambiguous.
+explicitly pinned tiles do not contribute names. Teams does not expose your own
+speaking state: in live captures with your camera on and off, your self tile and
+your People-panel row did not change while you spoke, so a combined Teams recording
+has no local speaking evidence and does not get a named copy. Teams also lights a
+remote person's frame for background sound on an open microphone; while two frames
+are lit, that time counts as ambiguous, and a lit frame that falls into a pause in
+another voice cannot name that voice without the 25% coverage above.
 
 Zoom desktop exposes participant names through Accessibility. Quill also needs
 Screen Recording permission to read the green/yellow active-speaker borders.
