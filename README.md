@@ -141,8 +141,8 @@ exists, selecting the recording opens on **With names**; switching to
 folder. The folder menu in the footer browses another recordings folder and
 returns to the default one.
 
-**Delete…** in a recording's right-click menu, or Delete (⌫) on the selected
-recording, asks for confirmation naming its title, date and time, then moves the
+A recording's right-click menu holds **Show in Finder** and **Delete…**.
+**Delete…**, or Delete (⌫) on the selected recording, asks for confirmation naming its title, date and time, then moves the
 whole recording folder to the Trash: audio, transcripts, cached ElevenLabs
 responses and regeneration backups. Nothing is erased permanently; **Put Back**
 in the Trash restores it. Quill refuses to delete the recording in progress or
