@@ -75,4 +75,19 @@ final class RecordingsModelTests: XCTestCase {
                        "Transcribing… You can browse other recordings while this runs.")
         XCTAssertNil(RecordingsModel.message(queued, activity: nil, allActivity: [:]))
     }
+
+    func testRowFormatting() {
+        XCTAssertEqual(RecordingFormat.duration(42), "42 s")
+        XCTAssertEqual(RecordingFormat.duration(52 * 60 + 10), "52 min")
+        XCTAssertEqual(RecordingFormat.duration(70 * 60), "1 h 10 min")
+        XCTAssertEqual(RecordingFormat.duration(120 * 60), "2 h")
+        XCTAssertNil(RecordingFormat.duration(nil))
+        XCTAssertEqual(RecordingFormat.people([]), "No participants")
+        XCTAssertEqual(RecordingFormat.people(["Dragos", "Emil Ilie", "Ioana Pop", "Radu Marin", "Maria Dinu"]), "Dragos, Emil, Ioana +2")
+        XCTAssertEqual(RecordingFormat.clock(3725), "01:02:05")
+        let colors = RecordingFormat.colors([TranscriptTurn(id: 0, start: 0, speaker: "Emil", text: ""),
+                                             TranscriptTurn(id: 1, start: 1, speaker: "Ioana", text: ""),
+                                             TranscriptTurn(id: 2, start: 2, speaker: "Emil", text: "")])
+        XCTAssertEqual(colors, ["Emil": .blue, "Ioana": .orange])
+    }
 }

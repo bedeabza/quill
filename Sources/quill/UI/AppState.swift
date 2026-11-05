@@ -13,11 +13,11 @@ final class AppState {
     var detectionText = "Meeting detection on"
     var detectionEnabled = false
 
-    /// Meeting detection is blocked on a permission; offer `requestMeetingPermission`.
+    /// Meeting detection is blocked on a permission; point to the Permissions section.
     var needsMeetingPermission: Bool { detectionText.contains("permission") }
     /// Label for the permission action: Zoom speaker names need Screen Recording.
     var meetingPermissionTitle: String {
-        detectionText.contains("Screen Recording") ? "Allow Zoom speaker names..." : "Allow meeting detection..."
+        detectionText.contains("Screen Recording") ? "Allow Zoom speaker names…" : "Allow meeting detection…"
     }
 
     @ObservationIgnored var toggleRecording: () -> Void = {}
@@ -25,7 +25,8 @@ final class AppState {
     @ObservationIgnored var toggleDetection: () -> Void = {}
     /// Keeps the current recording running after its meeting ends.
     @ObservationIgnored var keepRecording: () -> Void = {}
-    @ObservationIgnored var requestMeetingPermission: () -> Void = {}
+    /// Stops any recording cleanly and quits.
+    @ObservationIgnored var quit: () -> Void = {}
 
     static func transcriptionText(_ status: TranscriptionCoordinator.Status) -> String? {
         switch status {

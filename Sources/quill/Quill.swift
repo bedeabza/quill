@@ -138,7 +138,7 @@ struct Run: ParsableCommand {
         // access is denied. Existing recordings can still be transcribed.
         let checks = DoctorReport.run(recordingsRoot: root, checkKey: true)
         if !DoctorReport.allOK(checks) {
-            FileHandle.standardError.write(Data("startup checks need attention — open Permissions & readiness from the Quill menu:\n".utf8))
+            FileHandle.standardError.write(Data("startup checks need attention — see Quill → Permissions (Open Quill… in the menu):\n".utf8))
             DoctorReport.print(checks)
         }
 
@@ -193,43 +193,31 @@ struct Doctor: ParsableCommand {
 @MainActor
 final class AppController: NSObject, NSApplicationDelegate {
     private let root: URL
-    let appState = AppState()
-    private let menuBar = MenuBarController()
+    let appState: AppState
+    private let menuBar: MenuBarController
     private let transcription = TranscriptionCoordinator()
     private let meetings = MeetingAssistant()
     private var session: RecordingSession?
     private var ticker: Timer?
-    private var recordingsWindow: RecordingsWindowController?
-    private var permissionsWindow: PermissionsWindowController?
+    private var window: QuillWindowController?
 
     init(root: URL) {
         self.root = root
+        let appState = AppState()
+        self.appState = appState
+        menuBar = MenuBarController(appState: appState)
         super.init()
-        menuBar.onToggle = { [weak self] in self?.toggle() }
-        menuBar.onOpenFolder = { [weak self] in self?.openFolder() }
-        menuBar.onBrowseRecordings = { [weak self] in self?.browseRecordings() }
-        menuBar.onCheckPermissions = { [weak self] in
-            guard let self else { return }
-            self.permissionsWindow?.close()
-            self.permissionsWindow = PermissionsWindowController(root: self.root)
-            self.permissionsWindow?.show()
-        }
-        menuBar.onQuit = { [weak self] in self?.shutdown() }
-        showRecording(false, elapsed: nil)
-        menuBar.onDetectionToggle = { [weak self] in self?.meetings.toggleEnabled() }
-        menuBar.onPermission = { [weak self] in self?.meetings.requestPermission() }
-        menuBar.onKeepRecording = { [weak self] in self?.meetings.keepRecording() }
+        menuBar.onOpen = { [weak self] section in self?.showWindow(section) }
+        appState.quit = { [weak self] in self?.shutdown() }
         appState.toggleRecording = { [weak self] in self?.toggle() }
         appState.toggleDetection = { [weak self] in self?.meetings.toggleEnabled() }
         appState.keepRecording = { [weak self] in self?.meetings.keepRecording() }
-        appState.requestMeetingPermission = { [weak self] in self?.meetings.requestPermission() }
         meetings.onStart = { [weak self] in
             guard let self, self.session == nil else { return false }
             return self.startSession()
         }
         meetings.onStop = { [weak self] in self?.stopSession() }
         meetings.onStatus = { [weak self] text, enabled in
-            self?.menuBar.updateDetection(text, enabled: enabled)
             self?.appState.detectionText = text
             self?.appState.detectionEnabled = enabled
         }
@@ -304,10 +292,8 @@ final class AppController: NSObject, NSApplicationDelegate {
     }
 
     private func showTranscription(_ status: TranscriptionCoordinator.Status) {
-        recordingsWindow?.refresh()
-        let text = AppState.transcriptionText(status)
-        appState.transcriptionStatus = text
-        menuBar.updateTranscription(text)
+        window?.refreshRecordings()
+        appState.transcriptionStatus = AppState.transcriptionText(status)
     }
 
     private func tick() {
@@ -316,19 +302,19 @@ final class AppController: NSObject, NSApplicationDelegate {
     }
 
     private func showRecording(_ recording: Bool, elapsed: String?) {
-        menuBar.update(recording: recording, elapsed: elapsed)
         appState.recording = recording
         appState.elapsed = elapsed
     }
 
-    private func openFolder() {
-        try? FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        NSWorkspace.shared.open(root)
-    }
-
-    private func browseRecordings() {
-        if recordingsWindow == nil { recordingsWindow = RecordingsWindowController(root: root, transcription: transcription) }
-        recordingsWindow?.show()
+    /// The Quill window, created on first use and reused.
+    private func showWindow(_ section: QuillSection) {
+        if window == nil {
+            window = QuillWindowController(appState: appState,
+                                           recordings: RecordingsModel(root: root, transcription: transcription),
+                                           permissions: PermissionsModel(root: root),
+                                           settings: SettingsModel(appState: appState))
+        }
+        window?.show(section: section)
     }
 
     private static func format(_ interval: TimeInterval) -> String {

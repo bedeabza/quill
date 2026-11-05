@@ -1,297 +1,79 @@
 import AppKit
+import Observation
+import SwiftUI
 
-/// Status bar item in the top-right of the menu bar. Shows recording state at
-/// a glance and provides the only persistent control surface for the daemon
-/// and opens the on-demand recordings browser. The daemon runs as `.accessory`
-/// without a dock icon.
+/// Status bar item in the top-right of the menu bar: the feather (red while
+/// recording) and a short menu for recording and meeting detection. Settings,
+/// recordings and permissions live in the Quill window. Everything shown
+/// follows `AppState`.
 @MainActor
-final class MenuBarController: NSObject, NSMenuDelegate {
-    private let keyStore: ElevenLabsKeyStore
-    private let statusItem: NSStatusItem
-    private let stateLabel: NSMenuItem
-    private let transcriptionLabel: NSMenuItem
-    private let toggleItem: NSMenuItem
-    private let detectionLabel = NSMenuItem(title: "Meeting detection on", action: nil, keyEquivalent: "")
-    private let detectionToggle = NSMenuItem(title: "Automatic meeting recording", action: #selector(detectionClicked), keyEquivalent: "")
-    private let permissionItem = NSMenuItem(title: "Allow meeting detection...", action: #selector(permissionClicked), keyEquivalent: "")
-    private var postProcessingItems: [NSMenuItem] = []
-    private var titleModeItems: [NSMenuItem] = []
-    private var engineItems: [NSMenuItem] = []
-    private let voiceMemoryItem = NSMenuItem(title: "Remember speaker voices", action: #selector(voiceMemoryClicked), keyEquivalent: "")
-    private let apiKeyItem = NSMenuItem(title: "ElevenLabs API key...", action: #selector(apiKeyClicked), keyEquivalent: "")
-    private let removeKeyItem = NSMenuItem(title: "Remove ElevenLabs API key", action: #selector(removeKeyClicked), keyEquivalent: "")
-    private let keepItem = NSMenuItem(title: "Keep recording after meeting ends", action: #selector(keepClicked), keyEquivalent: "")
+final class MenuBarController: NSObject {
+    private let appState: AppState
+    let statusItem: NSStatusItem
+    private let stateLine = StatusLineItem()
+    private let transcriptionLine = StatusLineItem()
+    private let toggleItem = NSMenuItem(title: "Start Recording", action: #selector(toggleClicked), keyEquivalent: "r")
+    private let keepItem = NSMenuItem(title: "Keep Recording After Meeting Ends", action: #selector(keepClicked), keyEquivalent: "")
+    private let detectionLine = StatusLineItem()
+    private let detectionToggle = NSMenuItem(title: "Automatic Meeting Recording", action: #selector(detectionClicked), keyEquivalent: "")
+    private let permissionItem = NSMenuItem(title: "Allow meeting detection…", action: #selector(permissionClicked), keyEquivalent: "")
 
-    private var credentialOperationInProgress = false
-    private var keyStatusTask: Task<Void, Never>?
+    /// Opens the Quill window at a section.
+    var onOpen: (QuillSection) -> Void = { _ in }
 
-    var onToggle: (() -> Void)?
-    var onOpenFolder: (() -> Void)?
-    var onBrowseRecordings: (() -> Void)?
-    var onCheckPermissions: (() -> Void)?
-    var onQuit: (() -> Void)?
-    var onDetectionToggle: (() -> Void)?
-    var onPermission: (() -> Void)?
-    var onKeepRecording: (() -> Void)?
-
-    init(keyStore: ElevenLabsKeyStore = .shared) {
-        self.keyStore = keyStore
+    init(appState: AppState) {
+        self.appState = appState
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        super.init()
 
         let menu = NSMenu()
         menu.autoenablesItems = false
-
-        stateLabel = NSMenuItem(title: "idle", action: nil, keyEquivalent: "")
-        stateLabel.isEnabled = false
-        menu.addItem(stateLabel)
-
-        transcriptionLabel = NSMenuItem(title: "", action: nil, keyEquivalent: "")
-        transcriptionLabel.isEnabled = false
-        transcriptionLabel.isHidden = true
-        menu.addItem(transcriptionLabel)
-
-        menu.addItem(.separator())
-
-        toggleItem = NSMenuItem(
-            title: "Start recording",
-            action: #selector(toggleClicked),
-            keyEquivalent: "r"
-        )
-        super.init()
-        menu.delegate = self
-        menu.addItem(toggleItem)
-        detectionLabel.isEnabled = false
-        menu.addItem(keepItem)
-        menu.addItem(.separator())
-        menu.addItem(detectionLabel)
-        menu.addItem(detectionToggle)
-        menu.addItem(permissionItem)
-        voiceMemoryItem.target = self
-        voiceMemoryItem.toolTip = "Learn verified speaker voices locally and recognize them in later recordings."
-        menu.addItem(voiceMemoryItem)
-
-        let engine = NSMenuItem(title: "Transcription engine", action: nil, keyEquivalent: "")
-        let engineMenu = NSMenu()
-        engineMenu.autoenablesItems = false
-        for (index, kind) in TranscriptionEngineKind.allCases.enumerated() {
-            let item = NSMenuItem(title: kind.title, action: #selector(engineClicked(_:)), keyEquivalent: "")
-            item.tag = index
-            item.target = self
-            item.toolTip = kind == .elevenLabs ? "Uploads audio to ElevenLabs. Applies when the next transcription starts." : "Transcribes on this Mac. Applies when the next transcription starts."
-            engineItems.append(item)
-            engineMenu.addItem(item)
+        let open = NSMenuItem(title: "Open Quill…", action: #selector(openClicked), keyEquivalent: "o")
+        let quit = NSMenuItem(title: "Quit Quill", action: #selector(quitClicked), keyEquivalent: "q")
+        for item in [stateLine.item, transcriptionLine.item, .separator(),
+                     toggleItem, keepItem, .separator(),
+                     detectionLine.item, detectionToggle, permissionItem, .separator(),
+                     open, .separator(), quit] {
+            if item.action != nil { item.target = self }
+            menu.addItem(item)
         }
-        engine.submenu = engineMenu
-        menu.addItem(engine)
-        apiKeyItem.target = self
-        removeKeyItem.target = self
-        menu.addItem(apiKeyItem)
-        menu.addItem(removeKeyItem)
-
-        let cleanup = NSMenuItem(title: "Transcript cleanup (cloud)", action: nil, keyEquivalent: "")
-        let cleanupMenu = NSMenu()
-        cleanupMenu.autoenablesItems = false
-        for (index, title) in ["Off", "Automatic", "Codex (ChatGPT account)", "Claude Code"].enumerated() {
-            let item = NSMenuItem(title: title, action: #selector(postProcessingClicked(_:)), keyEquivalent: "")
-            item.tag = index
-            item.target = self
-            postProcessingItems.append(item)
-            cleanupMenu.addItem(item)
-        }
-        cleanup.submenu = cleanupMenu
-        menu.addItem(cleanup)
-
-        let titles = NSMenuItem(title: "Meeting titles", action: nil, keyEquivalent: "")
-        let titleMenu = NSMenu(); titleMenu.autoenablesItems = false
-        for (index, label) in ["Local titles", "Automatic AI", "Codex (ChatGPT account)", "Claude Code"].enumerated() {
-            let item = NSMenuItem(title: label, action: #selector(titleModeClicked(_:)), keyEquivalent: "")
-            item.tag = index; item.target = self
-            item.toolTip = index == 0 ? "Creates simple titles from transcript keywords on this Mac." : "Sends transcript excerpts to the selected text service. Uses a local title when unavailable."
-            titleModeItems.append(item); titleMenu.addItem(item)
-        }
-        titles.submenu = titleMenu; menu.addItem(titles)
-
-        let browse = NSMenuItem(title: "Recordings…", action: #selector(browseRecordingsClicked), keyEquivalent: "b")
-        browse.target = self
-        menu.addItem(browse)
-        let permissions = NSMenuItem(title: "Permissions & readiness…", action: #selector(checkPermissionsClicked), keyEquivalent: "")
-        permissions.target = self
-        menu.addItem(permissions)
-        let openFolder = NSMenuItem(
-            title: "Open recordings folder",
-            action: #selector(openFolderClicked),
-            keyEquivalent: "o"
-        )
-        menu.addItem(openFolder)
-
-        menu.addItem(.separator())
-
-        let quit = NSMenuItem(
-            title: "Quit quill",
-            action: #selector(quitClicked),
-            keyEquivalent: "q"
-        )
-        menu.addItem(quit)
-
-        for item in [toggleItem, openFolder, quit, detectionToggle, permissionItem, keepItem] {
-            item.target = self
-        }
-
         statusItem.menu = menu
 
         if let button = statusItem.button {
-            let image = Self.featherImage()
-            image?.isTemplate = true
-            button.image = image
+            button.image = Self.featherImage()
             button.imagePosition = .imageLeft
         }
+        observe()
     }
 
-    /// Reflect recording state in the icon tint and menu item titles. The
-    /// menu bar shows only the feather (red while recording); the elapsed
-    /// counter lives in the menu's state label. Call once a second while
-    /// recording.
-    func update(recording: Bool, elapsed: String?) {
-        stateLabel.title = recording ? "● recording · \(elapsed ?? "0:00")" : "idle"
-        toggleItem.title = recording ? "Stop recording" : "Start recording"
-        keepItem.isHidden = !recording
-        statusItem.button?.contentTintColor = recording ? .systemRed : nil
-    }
-
-    /// Show transcription progress/failure as a second status line in the
-    /// menu; nil hides it. Independent of recording state — a new recording
-    /// can run while the last one transcribes.
-    func updateTranscription(_ text: String?) {
-        transcriptionLabel.title = text ?? ""
-        transcriptionLabel.isHidden = text == nil
-    }
-
-    func updateDetection(_ text: String, enabled: Bool) {
-        detectionLabel.title = text
-        detectionToggle.state = enabled ? .on : .off
-        permissionItem.isHidden = !text.contains("permission")
-        permissionItem.title = text.contains("Screen Recording") ? "Allow Zoom speaker names..." : "Allow meeting detection..."
-    }
-
-    @objc private func voiceMemoryClicked() {
-        do { try Config.setVoiceMemoryEnabled(!Config.voiceMemoryEnabled()) }
-        catch { notifyUser(title: "Quill speaker memory", body: "Could not save the speaker memory setting: \(error)") }
-    }
-
-    func menuWillOpen(_ menu: NSMenu) {
-        voiceMemoryItem.state = Config.voiceMemoryEnabled() ? .on : .off
-        if keyStatusTask == nil, !credentialOperationInProgress {
-            keyStatusTask = Task { [weak self, keyStore] in
-                let hasKey = await Task.detached { [keyStore] in keyStore.containsKey() }.value
-                guard let self else { return }
-                self.keyStatusTask = nil
-                guard !self.credentialOperationInProgress else { return }
-                self.apiKeyItem.title = hasKey ? "Change ElevenLabs API key..." : "Set ElevenLabs API key..."
-                self.removeKeyItem.isHidden = !hasKey
-            }
-        }
-        for item in engineItems {
-            item.state = TranscriptionEngineKind.allCases[item.tag].rawValue == Config.transcriptionEngine() ? .on : .off
-        }
-        let selected = Config.postProcessing().mode
-        for item in postProcessingItems {
-            item.state = PostProcessingMode.allCases[item.tag] == selected ? .on : .off
-        }
-        for item in titleModeItems { item.state = PostProcessingMode.allCases[item.tag] == Config.recordingTitleMode() ? .on : .off }
-    }
-
-    @objc private func engineClicked(_ sender: NSMenuItem) {
-        guard !credentialOperationInProgress else { return }
-        credentialOperationInProgress = true
-        Task {
-            defer { credentialOperationInProgress = false }
-            let kind = TranscriptionEngineKind.allCases[sender.tag]
-            if kind == .elevenLabs {
-                let hasKey = await Task.detached { [keyStore] in keyStore.containsKey() }.value
-                if !hasKey, !(await enterAPIKey()) { return }
-            }
-            guard Config.setTranscriptionEngine(kind) else {
-                notifyUser(title: "Quill settings", body: "Could not save the transcription engine setting.")
-                return
-            }
-            for item in engineItems { item.state = item === sender ? .on : .off }
-            notifyUser(title: "Quill transcription", body: "\(kind.title) will be used for the next transcription.")
+    /// Renders now and again whenever a value it read changes.
+    private func observe() {
+        withObservationTracking { render() } onChange: { [weak self] in
+            Task { @MainActor in self?.observe() }
         }
     }
 
-    @objc private func apiKeyClicked() {
-        guard !credentialOperationInProgress else { return }
-        credentialOperationInProgress = true
-        Task {
-            defer { credentialOperationInProgress = false }
-            _ = await enterAPIKey()
-        }
+    private func render() {
+        let state = appState
+        stateLine.show(state.recording ? "Recording · \(state.elapsed ?? "0:00")" : "Idle",
+                       dot: state.recording ? .red : nil, primary: state.recording)
+        transcriptionLine.show(state.transcriptionStatus ?? "")
+        transcriptionLine.item.isHidden = state.transcriptionStatus == nil
+        toggleItem.title = state.recording ? "Stop Recording" : "Start Recording"
+        keepItem.isHidden = !state.recording
+        detectionLine.show(state.detectionText)
+        detectionToggle.state = state.detectionEnabled ? .on : .off
+        permissionItem.isHidden = !state.needsMeetingPermission
+        permissionItem.title = state.meetingPermissionTitle
+        statusItem.button?.contentTintColor = state.recording ? .systemRed : nil
     }
 
-    @discardableResult private func enterAPIKey() async -> Bool {
-        NSApp.activate(ignoringOtherApps: true)
-        let alert = NSAlert()
-        alert.messageText = "ElevenLabs API key"
-        alert.informativeText = "Your key is stored in a file only your user account can read. Selecting ElevenLabs sends recording audio to Scribe v2 for transcription."
-        alert.addButton(withTitle: "Save key")
-        alert.addButton(withTitle: "Cancel")
-        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 360, height: 26))
-        field.usesSingleLineMode = true
-        field.placeholderString = "Paste your ElevenLabs API key"
-        field.setAccessibilityLabel("ElevenLabs API key")
-        alert.accessoryView = field
-        alert.window.initialFirstResponder = field
-        defer { field.stringValue = "" }
-        guard alert.runModal() == .alertFirstButtonReturn else { return false }
-        let value = field.stringValue
-        field.stringValue = ""
-        do {
-            try await Task.detached { [keyStore] in try keyStore.save(value) }.value
-            notifyUser(title: "Quill settings", body: "ElevenLabs API key saved.")
-            return true
-        } catch {
-            NSApp.activate(ignoringOtherApps: true)
-            let failure = NSAlert()
-            failure.messageText = "Could not save the API key"
-            failure.informativeText = String(describing: error)
-            failure.runModal()
-            return false
-        }
-    }
-
-    @objc private func removeKeyClicked() {
-        guard !credentialOperationInProgress else { return }
-        credentialOperationInProgress = true
-        Task {
-            defer { credentialOperationInProgress = false }
-            do {
-                try await Task.detached { [keyStore] in try keyStore.remove() }.value
-                notifyUser(title: "Quill settings", body: "ElevenLabs API key removed. Select Parakeet or save another key to resume transcription.")
-            } catch {
-                notifyUser(title: "Quill settings", body: String(describing: error))
-            }
-        }
-    }
-
-    @objc private func postProcessingClicked(_ sender: NSMenuItem) {
-        let mode = PostProcessingMode.allCases[sender.tag]
-        guard Config.setPostProcessingMode(mode) else {
-            notifyUser(title: "Quill settings", body: "Could not save the transcript cleanup setting.")
-            return
-        }
-        for item in postProcessingItems { item.state = item === sender ? .on : .off }
-    }
-
-    @objc private func titleModeClicked(_ sender: NSMenuItem) {
-        guard Config.setRecordingTitleMode(PostProcessingMode.allCases[sender.tag]) else {
-            notifyUser(title: "Quill titles", body: "Could not save the title setting."); return
-        }
-        for item in titleModeItems { item.state = item === sender ? .on : .off }
-    }
-
-    @objc private func detectionClicked() { onDetectionToggle?() }
-    @objc private func permissionClicked() { onPermission?() }
-    @objc private func keepClicked() { onKeepRecording?() }
+    @objc private func toggleClicked() { appState.toggleRecording() }
+    @objc private func keepClicked() { appState.keepRecording() }
+    @objc private func detectionClicked() { appState.toggleDetection() }
+    @objc private func permissionClicked() { onOpen(.permissions) }
+    @objc private func openClicked() { onOpen(.recordings) }
+    @objc private func quitClicked() { appState.quit() }
 
     // Inlined Lucide feather SVG. Keeping it in source means the executable
     // has no separate resource bundle to install alongside it — true
@@ -307,17 +89,53 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     """
 
     private static func featherImage() -> NSImage? {
-        guard let data = featherSVG.data(using: .utf8),
-              let image = NSImage(data: data)
-        else { return nil }
+        guard let image = NSImage(data: Data(featherSVG.utf8)) else { return nil }
         // Menu-bar status icons are nominally 18pt tall; size the SVG to match.
         image.size = NSSize(width: 16, height: 16)
+        image.isTemplate = true
         return image
     }
+}
 
-    @objc private func toggleClicked() { onToggle?() }
-    @objc private func openFolderClicked() { onOpenFolder?() }
-    @objc private func browseRecordingsClicked() { onBrowseRecordings?() }
-    @objc private func checkPermissionsClicked() { onCheckPermissions?() }
-    @objc private func quitClicked() { onQuit?() }
+/// A menu line that reads as information rather than a greyed-out command.
+@MainActor
+final class StatusLineItem {
+    let item = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+    private let host = NSHostingView(rootView: StatusLine(text: "", dot: nil, primary: false))
+
+    init() {
+        item.isEnabled = false
+        item.view = host
+    }
+
+    func show(_ text: String, dot: Color? = nil, primary: Bool = false) {
+        let line = StatusLine(text: text, dot: dot, primary: primary)
+        guard host.rootView != line else { return }
+        item.title = text // for accessibility and menu search
+        host.rootView = line
+        host.frame.size = host.fittingSize
+    }
+}
+
+struct StatusLine: View, Equatable {
+    let text: String
+    let dot: Color?
+    let primary: Bool
+
+    var body: some View {
+        HStack(spacing: 6) {
+            if let dot {
+                Circle().fill(dot).frame(width: 8, height: 8)
+            }
+            Text(text)
+                .monospacedDigit()
+                .fontWeight(primary ? .medium : .regular)
+                .foregroundStyle(primary ? .primary : .secondary)
+        }
+        .font(.system(size: NSFont.menuFont(ofSize: 0).pointSize))
+        // Text lines up with the item titles; the dot sits in the checkmark column.
+        .padding(.leading, dot == nil ? 30 : 16)
+        .padding(.trailing, 16)
+        .frame(height: 24, alignment: .leading)
+    }
 }

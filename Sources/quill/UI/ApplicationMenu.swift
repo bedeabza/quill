@@ -1,7 +1,8 @@
 import AppKit
 
-/// Programmatic accessory apps have no nib-provided Edit menu. Native text
-/// fields rely on its responder-chain actions for Command-V and Command-A.
+/// Programmatic accessory apps have no nib-provided menus. Native text fields
+/// rely on the Edit menu's responder-chain actions for Command-V and Command-A,
+/// and the Quill window on Close Window for Command-W.
 @MainActor
 enum ApplicationMenu {
     static func make() -> NSMenu {
@@ -11,6 +12,12 @@ enum ApplicationMenu {
         applicationMenu.addItem(withTitle: "Quit Quill", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         application.submenu = applicationMenu
         menu.addItem(application)
+
+        let file = NSMenuItem(title: "File", action: nil, keyEquivalent: "")
+        let fileMenu = NSMenu(title: "File")
+        fileMenu.addItem(withTitle: "Close Window", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
+        file.submenu = fileMenu
+        menu.addItem(file)
 
         let edit = NSMenuItem(title: "Edit", action: nil, keyEquivalent: "")
         let editMenu = NSMenu(title: "Edit")

@@ -66,10 +66,11 @@ final class PermissionsModel {
     }
 
     /// Button title for a row, or nil when it is fine or has nothing to do.
+    /// System audio has no check to act on until a recording starts.
     func actionTitle(_ item: PermissionsReport.Item) -> String? {
-        guard let check = checks[item], item != .transcription else { return nil }
+        guard let check = checks[item], item != .transcription, item != .systemAudio else { return nil }
         if case .ok = check.status { return nil }
-        return item == .folder ? "Open folder" : "Settings…"
+        return item == .folder ? "Open Folder" : "Open Settings…"
     }
 
     /// Opens the folder, or asks macOS for access where it can still prompt and

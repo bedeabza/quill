@@ -86,19 +86,16 @@ final class RecordingsLibraryTests: XCTestCase, @unchecked Sendable {
         for entry in entries { XCTAssertThrowsError(try RecordingRegeneration.validate(entry.directory)) }
     }
 
-    func testPreviewRendersReadableNamesAndTimesAndSeparatesNamedVariant() throws {
+    func testTranscriptShowsReadableNamesAndTimesAndSeparatesNamedVariant() throws {
         let directory = try recording(in: root())
-        let original = try RecordingsLibrary.preview(in: directory, named: false)
-        XCTAssertTrue(original.contains("Weekly planning"))
-        XCTAssertTrue(original.contains("Participants: Alice"))
-        XCTAssertTrue(original.contains("[00:00:01] Speaker 1"))
-        XCTAssertTrue(original.contains("Previous words."))
-        XCTAssertFalse(original.contains("start_ms"))
-        XCTAssertTrue(try RecordingsLibrary.preview(in: directory, named: true).contains("No verified named transcript"))
+        XCTAssertEqual(try RecordingsLibrary.transcript(in: directory, named: false),
+                       .turns([TranscriptTurn(id: 0, start: 1, speaker: "Speaker 1", text: "Previous words.")]))
+        XCTAssertEqual(try RecordingsLibrary.transcript(in: directory, named: true), .empty("No verified named transcript is available."))
         try Transcript(engine: "elevenlabs", model: "scribe_v2", created_at: "fixture", segments: [
             .init(speaker: "system_1", start_ms: 1000, end_ms: 2000, text: "Previous words.", speaker_name: "Alice")])
             .write(to: directory, basename: "transcript-named")
-        XCTAssertTrue(try RecordingsLibrary.preview(in: directory, named: true).contains("[00:00:01] Alice"))
+        XCTAssertEqual(try RecordingsLibrary.transcript(in: directory, named: true),
+                       .turns([TranscriptTurn(id: 0, start: 1, speaker: "Alice", text: "Previous words.")]))
         XCTAssertTrue(try RecordingsLibrary.entries(in: directory.deletingLastPathComponent())[0].hasNamedTranscript)
     }
 

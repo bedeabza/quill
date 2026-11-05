@@ -43,7 +43,7 @@ final class RecordingTitlesTests: XCTestCase, @unchecked Sendable {
         XCTAssertEqual(first?.title, "Customer feedback and product launch priorities")
         XCTAssertEqual(first?.source, "codex")
         XCTAssertEqual(try Data(contentsOf: dir.appendingPathComponent("transcript.json")), before)
-        XCTAssertTrue(try RecordingsLibrary.preview(in: dir, named: false).hasPrefix(first!.title))
+        XCTAssertEqual(RecordingTitles.saved(in: dir)?.title, first?.title)
         // New transcript metadata with identical words must not spend another request.
         try transcript(text: content, created: "new timestamp").write(to: dir)
         XCTAssertNil(RecordingTitles.saved(in: dir))

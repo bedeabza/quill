@@ -30,8 +30,11 @@ final class RecordingsModel {
     private(set) var activity: [URL: TranscriptionCoordinator.Activity] = [:]
     /// Recordings whose title is being generated.
     private(set) var titleBusy: Set<URL> = []
-    /// Set when `root` could not be read.
+    /// Why `root` could not be read; nil when it could.
     private(set) var loadError: String?
+    /// False until the first scan of `root` finishes, so an empty list is not
+    /// mistaken for an empty folder.
+    private(set) var hasLoaded = false
 
     /// Matches title, original title, folder name and participants.
     var query = "" { didSet { if query != oldValue { rebuild() } } }
@@ -120,8 +123,9 @@ final class RecordingsModel {
             self.titleBusy = titleStates
             switch result {
             case .success(let rows): self.entries = rows; self.loadError = nil
-            case .failure(let error): self.entries = []; self.loadError = "Could not read this folder: \(error)"
+            case .failure(let error): self.entries = []; self.loadError = error.localizedDescription
             }
+            self.hasLoaded = true
             self.rebuild()
             self.preferredSelection = nil
             self.reloadTranscript()
@@ -185,6 +189,7 @@ final class RecordingsModel {
 
     private func open(_ folder: URL, selecting directory: URL?) {
         root = folder
+        hasLoaded = false
         preferredSelection = directory
         query = ""
         refresh()
@@ -279,7 +284,7 @@ final class RecordingsModel {
             return current.map { "Queued — waiting for \($0) to finish. Recordings are processed one at a time." }
                 ?? "Queued — waiting for the transcription worker. Check Permissions if this does not change."
         case .processing: return "Transcribing… You can browse other recordings while this runs."
-        case .failed(let reason): return "Regeneration failed: \(reason)"
+        case .failed(let reason): return "Transcription failed: \(reason)"
         case nil: return entry.canRegenerate ? nil : "This recording is unfinished or its audio is unavailable."
         }
     }

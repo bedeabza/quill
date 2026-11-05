@@ -37,4 +37,14 @@ final class ApplicationMenuTests: XCTestCase {
         XCTAssertFalse(try press("v", modifiers: []))
         XCTAssertEqual(target.pastes, 1, "Ordinary typing must not read the clipboard")
     }
+
+    @MainActor
+    func testCommandWClosesTheKeyWindow() throws {
+        let file = try XCTUnwrap(ApplicationMenu.make().items.first { $0.title == "File" }?.submenu)
+        let close = try XCTUnwrap(file.items.first { $0.title == "Close Window" })
+        XCTAssertEqual(close.keyEquivalent, "w")
+        XCTAssertEqual(close.keyEquivalentModifierMask, .command)
+        XCTAssertEqual(close.action, #selector(NSWindow.performClose(_:)))
+        XCTAssertNil(close.target, "Close Window must reach the key window through the responder chain")
+    }
 }

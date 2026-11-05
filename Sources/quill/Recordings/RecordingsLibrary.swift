@@ -105,27 +105,4 @@ enum RecordingsLibrary {
         if FileManager.default.fileExists(atPath: markdown.path) { return .text(try String(contentsOf: markdown, encoding: .utf8)) }
         return .empty(named ? "No verified named transcript is available." : "No transcript yet. Select an engine and choose Regenerate to transcribe this recording.")
     }
-
-    static func preview(in directory: URL, named: Bool) throws -> String {
-        let base = named ? "transcript-named" : "transcript"
-        let json = directory.appendingPathComponent(base + ".json")
-        let size = (try? json.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
-        guard size <= 16_000_000 else { return "This transcript is large. Open its folder to read the complete file." }
-        if let data = try? Data(contentsOf: json), let transcript = try? JSONDecoder().decode(Transcript.self, from: data) {
-            var lines = [RecordingTitles.saved(in: directory)?.title ?? transcript.meeting_title ?? directory.lastPathComponent, ""]
-            let names = transcript.participant_roster?.participants.map(\.name).sorted() ?? []
-            if !names.isEmpty { lines += ["Participants: " + names.joined(separator: ", "), ""] }
-            for segment in transcript.segments {
-                let seconds = max(0, segment.start_ms / 1000)
-                let clock = String(format: "%02d:%02d:%02d", seconds / 3600, seconds / 60 % 60, seconds % 60)
-                lines += ["[\(clock)] \(segment.displayName)", segment.text, ""]
-            }
-            return lines.joined(separator: "\n")
-        }
-        let markdown = directory.appendingPathComponent(base + ".md")
-        let markdownSize = (try? markdown.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
-        guard markdownSize <= 16_000_000 else { return "This transcript is large. Open its folder to read the complete file." }
-        if FileManager.default.fileExists(atPath: markdown.path) { return try String(contentsOf: markdown, encoding: .utf8) }
-        return named ? "No verified named transcript is available." : "No transcript yet. Select an engine and choose Regenerate to transcribe this recording."
-    }
 }
