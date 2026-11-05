@@ -100,7 +100,7 @@ final class RecordingsLibraryTests: XCTestCase, @unchecked Sendable {
     }
 
     @MainActor
-    func testSelectingARecordingWithANamedCopyShowsNamesByDefault() async throws {
+    func testTranscriptShowsTheNamedCopyWhenOneExistsAndTheOriginalOtherwise() async throws {
         let root = try root()
         let plain = try recording(in: root)
         let named = try recording(in: root, name: "2026.11.03-1000", started: "2026-11-03T08:00:00Z")
@@ -118,17 +118,12 @@ final class RecordingsLibraryTests: XCTestCase, @unchecked Sendable {
         model.refresh()
         let loadedSpeakers = try await speakers()
         XCTAssertEqual(model.selection, named, "the newest recording is selected first")
-        XCTAssertTrue(model.named)
         XCTAssertEqual(loadedSpeakers, ["Alice"])
 
-        model.named = false
-        let originalSpeakers = try await speakers()
-        XCTAssertEqual(originalSpeakers, ["Speaker 1"])
         model.selection = plain
-        XCTAssertFalse(model.named)
-        XCTAssertFalse(model.canShowNamed)
+        let originalSpeakers = try await speakers()
+        XCTAssertEqual(originalSpeakers, ["Speaker 1"], "without a named copy the original's anonymous labels show")
         model.selection = named
-        XCTAssertTrue(model.named, "each selection starts with names again")
         let reselectedSpeakers = try await speakers()
         XCTAssertEqual(reselectedSpeakers, ["Alice"])
     }

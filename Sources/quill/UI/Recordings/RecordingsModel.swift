@@ -44,7 +44,6 @@ final class RecordingsModel {
         didSet {
             guard selection != oldValue else { return }
             regenerateError = nil
-            named = canShowNamed
             reloadTranscript()
         }
     }
@@ -52,11 +51,8 @@ final class RecordingsModel {
         selection.flatMap { url in sections.lazy.flatMap(\.entries).first { $0.directory == url } }
     }
 
-    /// Show the transcript with verified speaker names; only when `canShowNamed`.
-    /// Each selection starts with names when the recording has a named copy.
-    var named = false { didSet { if named != oldValue { reloadTranscript() } } }
-    var canShowNamed: Bool { selectedEntry?.hasNamedTranscript == true }
-    /// Preview of the selected transcript; nil while nothing is selected or loading.
+    /// Preview of the selected transcript, the verified named copy when the
+    /// recording has one; nil while nothing is selected or loading.
     private(set) var transcript: TranscriptPreview?
 
     /// Engine for the next `regenerate()`; does not change the default engine.
@@ -75,8 +71,9 @@ final class RecordingsModel {
         if isEnqueuing { return "Adding recording to the queue…" }
         return regenerateError ?? Self.message(entry, activity: activity[entry.directory], allActivity: activity)
     }
-    var canRegenerate: Bool {
-        guard let entry = selectedEntry, entry.canRegenerate, !isEnqueuing else { return false }
+    var canRegenerate: Bool { selectedEntry.map(canRegenerate) ?? false }
+    func canRegenerate(_ entry: RecordingEntry) -> Bool {
+        guard entry.canRegenerate, !isEnqueuing else { return false }
         switch activity[entry.directory] { case .queued, .processing: return false; default: return true }
     }
 
@@ -256,14 +253,14 @@ final class RecordingsModel {
         Task { [titles] in await titles.enqueue(candidates) }
     }
 
-    /// Reloads the preview off the main actor when the selection, variant or
+    /// Reloads the preview off the main actor when the selection or its
     /// transcript files change; results for an older request are dropped.
     private func reloadTranscript() {
         guard let entry = selectedEntry else {
             transcriptRequest = UUID(); transcriptSignature = nil; transcript = nil
             return
         }
-        let named = self.named
+        let named = entry.hasNamedTranscript
         let base = named ? "transcript-named" : "transcript"
         let stamps = ["json", "md"].map { ext in
             let values = try? entry.directory.appendingPathComponent(base + "." + ext).resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey])

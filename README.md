@@ -134,14 +134,15 @@ messages appear in a banner.
 
 Selecting a recording shows its title with **Generate Title** or **Refresh
 Title**, date and time, participants, and the transcript as speaker turns with
-timestamps. The **Original / With names** switch appears for transcribed
-recordings and is disabled unless a verified named transcript exists; when one
-exists, selecting the recording opens on **With names**; switching to
-**Original** lasts until another recording is selected. **Show in Finder** in the toolbar opens the recording
+timestamps. The transcript shows the verified named copy when one exists, and
+otherwise the original transcript with its anonymous labels (Speaker 1,
+Speaker 2…). **Show in Finder** in the toolbar opens the recording
 folder. The folder menu in the footer browses another recordings folder and
 returns to the default one.
 
-A recording's right-click menu holds **Show in Finder** and **Delete…**.
+A recording's right-click menu, and the actions menu (…) next to its title in
+the detail pane, hold **Show in Finder**, **Regenerate…** (**Transcribe…** for a
+recording without a transcript) and **Delete…**.
 **Delete…**, or Delete (⌫) on the selected recording, asks for confirmation naming its title, date and time, then moves the
 whole recording folder to the Trash: audio, transcripts, cached ElevenLabs
 responses and regeneration backups. Nothing is erased permanently; **Put Back**
@@ -176,8 +177,8 @@ recording; make a short test recording and check `system.caf`. A saved
 ElevenLabs key does not prove account quota or speech-to-text permission;
 those are confirmed by the transcription response.
 
-To regenerate a transcript, select the recording and choose **Regenerate…** in
-the toolbar. The sheet selects the engine for this run only; the default for
+To regenerate a transcript, choose **Regenerate…** in the recording's
+right-click menu or its actions menu (…). The sheet selects the engine for this run only; the default for
 new recordings does not change. With ElevenLabs, matching saved responses are
 reused unless **Request a new ElevenLabs transcript** is checked; a new request
 uploads audio again and may be billed again. The sheet states that one aligned

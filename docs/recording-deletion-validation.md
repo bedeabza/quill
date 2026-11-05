@@ -4,8 +4,9 @@ Validated November 5, 2026.
 
 ## Behavior
 
-- **Delete…** in a recording row's right-click menu (next to **Show in Finder**),
-  or Delete (⌫) on the selected row, asks first. The alert is a sheet on the
+- **Delete…** in a recording row's right-click menu or the detail header's
+  actions menu (…), below **Show in Finder** and **Regenerate…**, or Delete (⌫)
+  on the selected row, asks first. The alert is a sheet on the
   Quill window, titled `Delete “<title>”?`, with the recording's date, time
   range and duration, and says that all of its files (audio, transcripts,
   cached ElevenLabs responses, backups) move to the Trash and can be put back.

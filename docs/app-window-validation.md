@@ -36,14 +36,17 @@ Settings group: **Transcription**, **Meetings**, **Permissions**, **General**.
   **Unfinished**. Ready rows
   show no tag. Queued, transcribing and failed messages appear in a banner.
 - The detail pane shows the title with **Generate Title** / **Refresh Title**,
-  date and time, participants, the **Original / With names** switch (disabled
-  unless a verified named transcript exists), and the transcript as speaker
-  turns with timestamps.
+  date and time, participants, and the transcript as speaker turns with
+  timestamps: the verified named copy when one exists, otherwise the original
+  with anonymous labels (Speaker 1, Speaker 2…). There is no Original / With
+  names switch.
 - Each Regenerate sheet starts from the current default engine.
 - Dropped from the old browser: double-clicking a row to open its folder (use
   **Show in Finder**), the **Refresh** button (the list refreshes every 2 s while
   visible), and the exact start/end tooltip on rows.
-- Toolbar: **Show in Finder** and **Regenerate…**. The sheet chooses the engine
+- Toolbar: **Show in Finder**. **Regenerate…** lives in the row's right-click
+  menu and the detail header's actions menu (…), with **Show in Finder** and
+  **Delete…**; it reads **Transcribe…** without a transcript. The sheet chooses the engine
   for this run only; the default does not change. **Request a new ElevenLabs
   transcript** appears for ElevenLabs only. The sheet keeps the notes "One
   aligned recording with echo reduction is sent to ElevenLabs. Matching

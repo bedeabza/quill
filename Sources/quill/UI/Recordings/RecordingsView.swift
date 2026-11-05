@@ -19,11 +19,6 @@ struct RecordingsView: View {
                     .help("Show this recording’s folder in Finder")
                     .disabled(model.selectedEntry == nil)
                 }
-                ToolbarItem(placement: .primaryAction) {
-                    Button("Regenerate…") { regenerating = true }
-                        .help("Transcribe this recording again")
-                        .disabled(!model.canRegenerate)
-                }
             }
             .sheet(isPresented: $regenerating) {
                 if let entry = model.selectedEntry { RegenerateSheet(model: model, entry: entry) }
@@ -58,17 +53,38 @@ struct RecordingsView: View {
             }
         } else {
             HStack(spacing: 0) {
-                RecordingList(model: model)
+                RecordingList(model: model, regenerate: regenerate)
                     .frame(width: 300)
                 Divider()
                 if let entry = model.selectedEntry {
-                    RecordingDetail(model: model, entry: entry, regenerate: $regenerating)
+                    RecordingDetail(model: model, entry: entry, regenerate: regenerate)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
                     Color.clear.frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
             }
         }
+    }
+
+    /// The sheet works on the selection, so a row's menu selects its recording first.
+    private func regenerate(_ entry: RecordingEntry) {
+        model.selection = entry.directory
+        regenerating = true
+    }
+}
+
+/// A recording's actions, in its row's context menu and its detail header's menu.
+private struct RecordingActions: View {
+    let model: RecordingsModel
+    let entry: RecordingEntry
+    let regenerate: (RecordingEntry) -> Void
+
+    var body: some View {
+        Button("Show in Finder") { model.showInFinder(entry) }
+        Button(entry.hasTranscript ? "Regenerate…" : "Transcribe…") { regenerate(entry) }
+            .disabled(!model.canRegenerate(entry))
+        Divider()
+        Button("Delete…") { confirmDelete(entry, model: model) }
     }
 }
 
@@ -142,6 +158,7 @@ private struct FolderActions: View {
 
 private struct RecordingList: View {
     @Bindable var model: RecordingsModel
+    let regenerate: (RecordingEntry) -> Void
 
     var body: some View {
         List(selection: $model.selection) {
@@ -159,9 +176,7 @@ private struct RecordingList: View {
         .listStyle(.inset)
         .contextMenu(forSelectionType: URL.self) { selected in
             if let entry = selected.first.flatMap(entry) {
-                Button("Show in Finder") { model.showInFinder(entry) }
-                Divider()
-                Button("Delete…") { confirmDelete(entry, model: model) }
+                RecordingActions(model: model, entry: entry, regenerate: regenerate)
             }
         }
         .onDeleteCommand { if let entry = model.selectedEntry { confirmDelete(entry, model: model) } }
@@ -276,7 +291,7 @@ private struct StatusTag: View {
 private struct RecordingDetail: View {
     @Bindable var model: RecordingsModel
     let entry: RecordingEntry
-    @Binding var regenerate: Bool
+    let regenerate: (RecordingEntry) -> Void
 
     var body: some View {
         ScrollView {
@@ -310,6 +325,17 @@ private struct RecordingDetail: View {
                     .textSelection(.enabled)
                     .help(entry.originalTitle.map { $0 == entry.title ? "" : "Original title: \($0)" } ?? "")
                 titleButton
+                Spacer(minLength: 0)
+                Menu {
+                    RecordingActions(model: model, entry: entry, regenerate: regenerate)
+                } label: {
+                    Label("Actions", systemImage: "ellipsis.circle")
+                        .labelStyle(.iconOnly)
+                }
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .fixedSize()
+                .help("Regenerate or delete this recording")
             }
             VStack(alignment: .leading, spacing: 5) {
                 Label(RecordingFormat.when(entry), systemImage: "calendar")
@@ -356,39 +382,20 @@ private struct RecordingDetail: View {
             return Banner(tint: .secondary, symbol: "clock", text: message ?? "Queued.")
         case .failed:
             return Banner(tint: .red, symbol: "exclamationmark.triangle.fill", text: message ?? "Transcription failed.",
-                          action: model.canRegenerate ? (entry.hasTranscript ? "Regenerate…" : "Transcribe…", { regenerate = true }) : nil)
+                          action: model.canRegenerate ? (entry.hasTranscript ? "Regenerate…" : "Transcribe…", { regenerate(entry) }) : nil)
         case .notTranscribed:
             return Banner(tint: failed ? .red : .secondary, symbol: failed ? "exclamationmark.triangle.fill" : "minus.circle",
                           text: message ?? "This recording hasn’t been transcribed.",
-                          action: model.canRegenerate ? ("Transcribe…", { regenerate = true }) : nil)
+                          action: model.canRegenerate ? ("Transcribe…", { regenerate(entry) }) : nil)
         case .unfinished:
             return Banner(tint: .secondary, symbol: "exclamationmark.circle", text: message ?? "This recording is unfinished.")
         }
     }
 
     private var transcriptBar: some View {
-        HStack {
-            Text("Transcript")
-                .font(.headline)
-            Spacer()
-            if entry.hasTranscript {
-                Picker("Speaker labels", selection: named) {
-                    Text("Original").tag(false)
-                    Text("With names").tag(true)
-                }
-                .pickerStyle(.segmented)
-                .labelsHidden()
-                .fixedSize()
-                .disabled(!model.canShowNamed)
-                .help(model.canShowNamed ? "Show speaker names matched from the meeting"
-                                         : "No named transcript is available for this recording")
-            }
-        }
-        .frame(minHeight: 24)
-    }
-
-    private var named: Binding<Bool> {
-        Binding(get: { model.named }, set: { if !$0 || model.canShowNamed { model.named = $0 } })
+        Text("Transcript")
+            .font(.headline)
+            .frame(minHeight: 24)
     }
 
     @ViewBuilder private var transcript: some View {
@@ -402,7 +409,7 @@ private struct RecordingDetail: View {
                 // Lazy, so meetings of several hours scroll smoothly.
                 LazyVStack(alignment: .leading, spacing: 16) {
                     ForEach(turns) { turn in
-                        TurnView(turn: turn, color: model.named ? colors[turn.speaker] ?? .primary : .secondary)
+                        TurnView(turn: turn, color: colors[turn.speaker] ?? .primary)
                     }
                 }
                 .textSelection(.enabled)
