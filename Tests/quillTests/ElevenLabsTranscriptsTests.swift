@@ -64,11 +64,41 @@ final class ElevenLabsTranscriptsTests: XCTestCase, @unchecked Sendable {
         XCTAssertEqual(output.report.speakers[0].observed_seconds, 0)
     }
 
-    func testUnobservedSpeechIsExcludedButCoverageIsReported() {
-        let output = build([segment(end: 100)], observations("Alice", from: 0, to: 2))
-        XCTAssertTrue(output.report.accepted)
-        XCTAssertEqual(output.report.speakers[0].agreement, 1)
-        XCTAssertEqual(output.report.speakers[0].observed_fraction, 0.02, accuracy: 0.000001)
+    func testUnobservedSpeechIsExcludedFromAgreementButCoverageNeedsAQuarter() {
+        let thin = build([segment(end: 100)], observations("Alice", from: 0, to: 2))
+        XCTAssertEqual(thin.report.speakers[0].agreement, 1)
+        XCTAssertEqual(thin.report.speakers[0].observed_fraction, 0.02, accuracy: 0.000001)
+        XCTAssertFalse(thin.report.accepted)
+        XCTAssertNil(thin.named)
+        let quarter = build([segment(end: 100)], observations("Alice", from: 0, to: 25))
+        XCTAssertEqual(quarter.report.speakers[0].observed_fraction, 0.25, accuracy: 0.000001)
+        XCTAssertTrue(quarter.report.accepted)
+    }
+
+    /// Recording 2026.11.05-1346 (Teams): the remote participant never spoke, but
+    /// line noise lit her border. One sample survived a 16 ms remote-only window
+    /// in a pause, giving 0.012 s of "Helen" over the local voice's words.
+    func testMillisecondsOfNoisyRemoteBorderCannotNameAWholeVoice() {
+        let track = SessionMeta.Track(file: MeetingAudio.filename, speaker: "meeting", offsetMs: 0)
+        let manifest = MeetingAudio.Manifest(version: 1, algorithm: "fixture", sample_rate: 16000, inputs: [], audio_sha256: "fixture",
+            frames: 16000 * 140, microphone_energy: 0, cleaned_microphone_energy: 0, system_energy: 0,
+            local_windows: [], remote_windows: [.init(start: 120.576, end: 120.592)])
+        let turns: [(Double, Double)] = [(118.74, 119.02), (120.18, 120.24), (120.32, 120.52), (120.58, 120.68), (120.7, 120.86),
+            (120.9, 121.22), (121.68, 121.74), (121.8, 122), (122.04, 122.32), (122.42, 122.64), (122.68, 122.82),
+            (122.9, 123.26), (123.32, 123.58), (127.58, 133), (133.1, 138.28)]
+        let voice = TranscriptSegment(start: 118.74, end: 138.28, text: "I'm gonna talk for about 10 seconds.",
+            words: turns.map { .init(start: $0.0, end: $0.1, text: "word") }, speakerID: "speaker_0")
+        let border = SpeakerObservation(observed_at: 1000 + 120.5, meeting_id: "test", names: ["Helen"], source: "meeting_tile")
+        let output = ElevenLabsTranscripts.build(meta: .init(tracks: [track], audioStartedAt: 1000, localSpeakerName: "Dragos Badea",
+            sharedMicrophone: false), tracks: [.init(track: track, segments: [voice], meetingAudio: manifest)],
+            roster: .init(audio_started_at: 1000), observations: [border])
+        let speaker = output.report.speakers[0]
+        XCTAssertEqual(speaker.candidate_name, "Helen")
+        XCTAssertEqual(speaker.agreement, 1)
+        XCTAssertEqual(speaker.observed_seconds, 0.012, accuracy: 0.000001)
+        XCTAssertLessThan(speaker.observed_fraction, 0.001)
+        XCTAssertFalse(speaker.accepted)
+        XCTAssertNil(output.named)
     }
 
     func testDuplicateEvidenceDoesNotOutvoteAConflict() {

@@ -4,6 +4,10 @@ import Foundation
 /// speaker model, voice memory, roster inference or text cleanup is used.
 enum ElevenLabsTranscripts {
     static let threshold = 0.95
+    /// Observed evidence must cover this share of a speaker's speech. A remote
+    /// border lit by line noise can leak into a pause in another voice; a few
+    /// milliseconds of it must not name that whole voice at 100% agreement.
+    static let minimumObservedFraction = 0.25
 
     struct TrackResult {
         let track: SessionMeta.Track
@@ -25,7 +29,8 @@ enum ElevenLabsTranscripts {
 
     struct MappingReport: Codable {
         var threshold = ElevenLabsTranscripts.threshold
-        var rule = "Every remote speaker needs >=95% agreement by observed speech duration. Missing evidence fails; unobserved speech is excluded from the denominator."
+        var minimum_observed_fraction = ElevenLabsTranscripts.minimumObservedFraction
+        var rule = "Every remote speaker needs >=95% agreement by observed speech duration, observed over >=25% of their speech. Missing evidence fails; unobserved speech is excluded from the agreement denominator."
         let accepted: Bool
         let speakers: [SpeakerEvidenceReport]
     }
@@ -190,6 +195,7 @@ enum ElevenLabsTranscripts {
                 let duration = own.reduce(0) { $0 + $1.end - $1.start }
                 let name = best.flatMap { displayNames[$0.key] }
                 let accepted = providerIDs[id] != nil && name != nil && observed > 0 && agreement + 1e-10 >= threshold
+                    && observed / duration + 1e-10 >= minimumObservedFraction
                 reports.append(.init(speaker: id, provider_speaker_id: providerIDs[id], candidate_name: name,
                     agreement: agreement, observed_seconds: observed, speech_seconds: duration,
                     observed_fraction: duration > 0 ? observed / duration : 0, ambiguous_seconds: ambiguous, accepted: accepted))
@@ -199,7 +205,7 @@ enum ElevenLabsTranscripts {
         analysis.turns.sort { $0.start < $1.start }
         var report = MappingReport(accepted: !reports.isEmpty && reports.allSatisfy(\.accepted), speakers: reports)
         if tracks.contains(where: { $0.track.source == "meeting" }) {
-            report.rule = "Every speaker in the combined meeting recording needs >=95% agreement by observed speech duration. Only clear matching-source audio windows may vote. Missing evidence fails; unobserved speech is excluded from the denominator."
+            report.rule = "Every speaker in the combined meeting recording needs >=95% agreement by observed speech duration, observed over >=25% of their speech. Only clear matching-source audio windows may vote. Missing evidence fails; unobserved speech is excluded from the agreement denominator."
         }
         let original = Transcript(engine: "elevenlabs", model: "scribe_v2", created_at: createdAt, segments: merged,
             schema_version: 3, speaker_detection: statuses, participant_roster: roster,
