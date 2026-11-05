@@ -59,6 +59,10 @@ Move `.build/Quill.app` to `~/Applications` using Finder. Quit an older copy
 before replacing it. Quill keeps recordings and configuration outside the app,
 so replacing the app preserves both.
 
+`sh tools/deploy-app.sh` does all of this in one step: it builds and packages
+Quill, quits the running copy (never while it records), replaces
+`~/Applications/Quill.app`, reopens it and checks that it keeps running.
+
 To keep the terminal command and start Quill at login:
 
 ```sh

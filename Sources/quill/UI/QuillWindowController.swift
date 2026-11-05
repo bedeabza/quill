@@ -44,7 +44,7 @@ final class QuillWindowController: NSWindowController, NSWindowDelegate {
     let recordings: RecordingsModel
     let permissions: PermissionsModel
     let settings: SettingsModel
-    private let navigation = QuillNavigation()
+    let navigation = QuillNavigation()
     private var isOpen = false
 
     init(appState: AppState, recordings: RecordingsModel, permissions: PermissionsModel, settings: SettingsModel) {
@@ -123,8 +123,7 @@ struct QuillWindow: View {
                 Section("Settings") {
                     row(.transcription)
                     row(.meetings)
-                    row(.permissions)
-                        .badge(permissions.attentionCount)
+                    row(.permissions, badge: permissions.attentionCount)
                     row(.general)
                 }
             }
@@ -146,7 +145,11 @@ struct QuillWindow: View {
         Binding(get: { navigation.section }, set: { if let section = $0 { navigation.section = section } })
     }
 
-    private func row(_ section: QuillSection) -> some View {
-        Label(section.title, systemImage: section.symbol).tag(section)
+    /// The tag must stay the row's outermost modifier: a `.badge` applied after it
+    /// hides the tag from the List, so clicking that row selects nothing.
+    private func row(_ section: QuillSection, badge: Int = 0) -> some View {
+        Label(section.title, systemImage: section.symbol)
+            .badge(badge)
+            .tag(section)
     }
 }
