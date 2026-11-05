@@ -44,7 +44,7 @@ final class RecordingsModel {
         didSet {
             guard selection != oldValue else { return }
             regenerateError = nil
-            if selectedEntry?.hasNamedTranscript != true { named = false }
+            named = canShowNamed
             reloadTranscript()
         }
     }
@@ -53,6 +53,7 @@ final class RecordingsModel {
     }
 
     /// Show the transcript with verified speaker names; only when `canShowNamed`.
+    /// Each selection starts with names when the recording has a named copy.
     var named = false { didSet { if named != oldValue { reloadTranscript() } } }
     var canShowNamed: Bool { selectedEntry?.hasNamedTranscript == true }
     /// Preview of the selected transcript; nil while nothing is selected or loading.

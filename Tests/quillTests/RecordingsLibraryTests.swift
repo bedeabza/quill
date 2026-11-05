@@ -99,6 +99,40 @@ final class RecordingsLibraryTests: XCTestCase, @unchecked Sendable {
         XCTAssertTrue(try RecordingsLibrary.entries(in: directory.deletingLastPathComponent())[0].hasNamedTranscript)
     }
 
+    @MainActor
+    func testSelectingARecordingWithANamedCopyShowsNamesByDefault() async throws {
+        let root = try root()
+        let plain = try recording(in: root)
+        let named = try recording(in: root, name: "2026.11.03-1000", started: "2026-11-03T08:00:00Z")
+        try Transcript(engine: "elevenlabs", model: "scribe_v2", created_at: "fixture", segments: [
+            .init(speaker: "system_1", start_ms: 1000, end_ms: 2000, text: "Previous words.", speaker_name: "Alice")])
+            .write(to: named, basename: "transcript-named")
+        let model = RecordingsModel(root: root, transcription: TranscriptionCoordinator())
+        func speakers() async throws -> [String] {
+            for _ in 0..<200 {
+                if case .turns(let turns) = model.transcript { return turns.map(\.speaker) }
+                try await Task.sleep(nanoseconds: 10_000_000)
+            }
+            XCTFail("The transcript did not load"); return []
+        }
+        model.refresh()
+        let loadedSpeakers = try await speakers()
+        XCTAssertEqual(model.selection, named, "the newest recording is selected first")
+        XCTAssertTrue(model.named)
+        XCTAssertEqual(loadedSpeakers, ["Alice"])
+
+        model.named = false
+        let originalSpeakers = try await speakers()
+        XCTAssertEqual(originalSpeakers, ["Speaker 1"])
+        model.selection = plain
+        XCTAssertFalse(model.named)
+        XCTAssertFalse(model.canShowNamed)
+        model.selection = named
+        XCTAssertTrue(model.named, "each selection starts with names again")
+        let reselectedSpeakers = try await speakers()
+        XCTAssertEqual(reselectedSpeakers, ["Alice"])
+    }
+
     func testTranscriptMergesConsecutiveSpeakerSegmentsIntoTurns() throws {
         let directory = try recording(in: root())
         let fixture = #"""
