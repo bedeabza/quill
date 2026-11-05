@@ -250,8 +250,9 @@ final class RecordingsModel {
         formatter.calendar = calendar
         formatter.timeZone = calendar.timeZone
         formatter.locale = calendar.locale ?? .autoupdatingCurrent
-        formatter.setLocalizedDateFormatFromTemplate("EEEE d MMMM")
         return days.keys.sorted(by: >).map { day in
+            // Days from another year carry the year so they cannot be mistaken for this year's.
+            formatter.setLocalizedDateFormatFromTemplate(calendar.isDate(day, equalTo: now, toGranularity: .year) ? "EEEE d MMMM" : "EEEE d MMMM yyyy")
             let title = calendar.isDate(day, inSameDayAs: now) ? "Today"
                 : calendar.isDateInYesterday(day, relativeTo: now) ? "Yesterday" : formatter.string(from: day)
             let sorted = days[day]!.sorted {

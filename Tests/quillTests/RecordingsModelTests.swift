@@ -29,11 +29,12 @@ final class RecordingsModelTests: XCTestCase {
             entry("older-late", "2026-11-02T15:00:00Z"),
             entry("today-first", "2026-11-03T23:30:00Z"), // 00:30 local on 4 November
             entry("today-late", "2026-11-04T22:30:00Z"),
+            entry("last-year", "2025-11-03T10:00:00Z"),
         ]
         let sections = RecordingsModel.sections(entries, query: "", now: now, calendar: calendar)
-        XCTAssertEqual(sections.map(\.title), ["Today", "Yesterday", "Monday 2 November"])
+        XCTAssertEqual(sections.map(\.title), ["Today", "Yesterday", "Monday 2 November", "Monday, 3 November 2025"])
         XCTAssertEqual(sections.map { $0.entries.map(\.directory.lastPathComponent) },
-                       [["today-late", "today-mid", "today-first"], ["yesterday"], ["older-late", "older-early"]])
+                       [["today-late", "today-mid", "today-first"], ["yesterday"], ["older-late", "older-early"], ["last-year"]])
         XCTAssertEqual(sections[0].day, calendar.startOfDay(for: now))
     }
 
