@@ -20,8 +20,11 @@ let package = Package(
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
                 .product(name: "FluidAudio", package: "FluidAudio"),
             ],
-            exclude: ["Info.plist"]
-
+            exclude: ["Info.plist"],
+            // SwiftPM stamps the deployment target as the SDK version (sdk 15.0), which makes
+            // AppKit draw the macOS 15 look; stamp SDK 26.0 to get the current look, keeping minos 15.0.
+            linkerSettings: [.unsafeFlags(["-Xlinker", "-platform_version", "-Xlinker", "macos",
+                                           "-Xlinker", "15.0", "-Xlinker", "26.0"])]
         ),
     ]
 )
