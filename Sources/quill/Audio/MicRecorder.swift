@@ -212,6 +212,7 @@ final class MicRecorder: @unchecked Sendable {
     /// the only recovery is restarting raw.
     private func installVoiceTap(on input: AVAudioInputNode, format: AVAudioFormat) {
         let checkFrames = Int(format.sampleRate)
+        let engine = engine
         input.installTap(onBus: 0, bufferSize: 4096, format: format) { [weak self] buffer, when in
             guard let self else { return }
             if !self.livenessSettled {
@@ -225,7 +226,6 @@ final class MicRecorder: @unchecked Sendable {
                 if self.livenessFrames >= checkFrames {
                     self.livenessSettled = true
                     if self.livenessPeak == 0 {
-                        let engine = self.engine
                         DispatchQueue.main.async { if engine === self.engine { self.fallBackToRaw() } }
                     }
                 }
