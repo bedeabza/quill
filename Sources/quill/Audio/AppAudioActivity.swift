@@ -6,9 +6,7 @@ import Foundation
 enum AppAudioActivity {
     static func isRunning(pid: pid_t, bundleID: String?) -> Bool {
         processObjects().contains { object in
-            let ownPID = read(object, kAudioProcessPropertyPID, pid_t(-1))
-            let bundle = read(object, kAudioProcessPropertyBundleID, "" as CFString) as String
-            guard ownPID == pid || belongs(bundle, to: bundleID) else { return false }
+            guard read(object, kAudioProcessPropertyPID, pid_t(-1)) == pid || belongs(bundle(object), to: bundleID) else { return false }
             return read(object, kAudioProcessPropertyIsRunning, UInt32(0)) != 0
         }
     }
@@ -17,6 +15,15 @@ enum AppAudioActivity {
     static func belongs(_ bundle: String, to appBundleID: String?) -> Bool {
         guard let appBundleID, !appBundleID.isEmpty, !bundle.isEmpty else { return false }
         return bundle == appBundleID || bundle.hasPrefix(appBundleID + ".")
+    }
+
+    private static func bundle(_ object: AudioObjectID) -> String {
+        var address = AudioObjectPropertyAddress(mSelector: kAudioProcessPropertyBundleID, mScope: kAudioObjectPropertyScopeGlobal,
+                                                 mElement: kAudioObjectPropertyElementMain)
+        var value: Unmanaged<CFString>?
+        var size = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
+        guard AudioObjectGetPropertyData(object, &address, 0, nil, &size, &value) == noErr, let value else { return "" }
+        return value.takeRetainedValue() as String
     }
 
     private static func processObjects() -> [AudioObjectID] {

@@ -5,8 +5,9 @@
 - Desktop Zoom hides its meeting window while you share your screen. For an
   already detected Zoom meeting whose window is no longer listed, `MeetingScanner`
   now reads, in order:
-  1. another Zoom window with call controls: the meeting is **present**, and
-     that window becomes the meeting's window (same meeting ID);
+  1. another Zoom window with call controls: the meeting is **present**; if
+     that window is not already a known meeting's window, it becomes this
+     meeting's window (same meeting ID);
   2. a Zoom share window: a title starting `zoom share` (share toolbar or
      status bar), a `Stop Share`, `Stop Sharing`, `Pause Share` or
      `Resume Share` button, or participant video tiles labelled with their
@@ -98,4 +99,18 @@ call where someone shares:
    windows Zoom listed and whether `zoom_share` or `audio_running` recognised
    them. It contains Zoom's window titles and button labels, which may include
    names.
-5. After leaving the call, recording stops about 30 s later.
+5. After leaving the call, recording stops about 30 s later. If it keeps
+   recording with "Meeting status unavailable", Zoom kept its audio running
+   after the call (the capture's `audio_running` shows it): stop manually and
+   send the capture.
+
+## Known limits
+
+- While a Zoom meeting whose window is gone reads uncertain because Zoom still
+  runs audio (for example a Zoom Phone call right after), it is not pruned; the
+  next Zoom meeting window adopts its ID and an ongoing recording continues
+  into it. Before this change a call window appearing during the countdown
+  already kept the recording going.
+- The share-window labels are unconfirmed; once a live capture shows the real
+  ones, the patterns should be narrowed to them. They can only delay a stop for
+  as long as a share window stays open.

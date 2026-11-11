@@ -752,8 +752,8 @@ never count as speaking. Ambiguous or unavailable indicators leave speech
 unnamed rather than assigning it to another participant.
 
 Desktop Zoom hides its meeting window while you share your screen. Zoom's
-share windows (its share toolbar or status bar, a Stop Share or Pause Share
-button, or a floating panel of participant videos) keep an already detected
+share windows (its share toolbar or status bar, a Stop Share, Stop Sharing,
+Pause Share or Resume Share button, or a floating panel of participant videos) keep an already detected
 meeting present; they never start one. While no such window is recognized,
 Zoom still running call audio (Core Audio's per-process running state; no
 audio is read) makes the missing meeting window an uncertain read: recording
