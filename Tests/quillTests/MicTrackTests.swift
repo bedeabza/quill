@@ -77,6 +77,10 @@ final class MicTrackTests: XCTestCase {
         let derived = MicrophoneGaps.read(in: dir)
         XCTAssertEqual(derived, [MicTrack.Gap(start: 6.5, end: 2383)])
         XCTAssertEqual(MicrophoneGaps.notice(derived, duration: 2383), "Microphone stopped at 0:06. Your voice after that wasn’t recorded.")
+        // The call ended and Quill stopped after its 30 s countdown: nothing was lost.
+        try JSONSerialization.data(withJSONObject: ["duration_seconds": 38, "files": ["mic": "mic.caf"],
+                                                    "start_offset_ms": ["mic": 500]]).write(to: meta)
+        XCTAssertEqual(MicrophoneGaps.read(in: dir), [])
 
         try JSONSerialization.data(withJSONObject: ["duration_seconds": 3700, "files": ["mic": "mic.caf"],
             "microphone_gaps": [["start": 387.5, "end": 389.1], ["start": 1200, "end": 1260.25], ["start": 3600, "end": 3700]]]).write(to: meta)

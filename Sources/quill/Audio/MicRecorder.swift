@@ -33,8 +33,8 @@ final class MicRecorder: @unchecked Sendable {
         }
     }
 
-    /// Restarts beyond this many per minute are dropped, so a route that keeps
-    /// reconfiguring itself cannot loop; the next input change tries again.
+    /// Restarts beyond this many per minute wait for the minute to pass, so a
+    /// route that keeps reconfiguring itself cannot loop.
     private static let restartLimit = 10
 
     private var engine = AVAudioEngine()
@@ -109,6 +109,11 @@ final class MicRecorder: @unchecked Sendable {
             }
         }
         let inputFormat = input.outputFormat(forBus: 0)
+        // Mid-switch the input can report 0 Hz or no channels; connecting or
+        // tapping that format raises an exception Swift cannot catch.
+        guard inputFormat.sampleRate > 0, inputFormat.channelCount > 0 else {
+            throw RecorderError.formatUnsupported(inputFormat)
+        }
 
         // One explicit mono client format. With voice processing this is the
         // Voice I/O boundary format on both sides of the duplex unit — never
@@ -170,8 +175,10 @@ final class MicRecorder: @unchecked Sendable {
         configurationObserver = NotificationCenter.default.addObserver(
             forName: .AVAudioEngineConfigurationChange, object: engine, queue: .main
         ) { [weak self] _ in
-            // A route change the engine survived needs nothing.
-            guard let self, !engine.isRunning || engine.inputNode.outputFormat(forBus: 0) != inputFormat else { return }
+            // A route change the engine survived needs nothing, nor a
+            // notification already queued for an engine since replaced.
+            guard let self, engine === self.engine,
+                  !engine.isRunning || engine.inputNode.outputFormat(forBus: 0) != inputFormat else { return }
             self.scheduleRestart("input configuration changed")
         }
 
@@ -218,7 +225,8 @@ final class MicRecorder: @unchecked Sendable {
                 if self.livenessFrames >= checkFrames {
                     self.livenessSettled = true
                     if self.livenessPeak == 0 {
-                        DispatchQueue.main.async { self.fallBackToRaw() }
+                        let engine = self.engine
+                        DispatchQueue.main.async { if engine === self.engine { self.fallBackToRaw() } }
                     }
                 }
             }
@@ -259,39 +267,49 @@ final class MicRecorder: @unchecked Sendable {
         FileHandle.standardError.write(Data(
             "warning: voice processing delivered silence — restarting mic raw\n".utf8
         ))
-        restart(voiceProcessing: false)
+        if !restart(voiceProcessing: false) { scheduleRestart("raw restart failed", after: 1, attempt: 1) }
     }
 
     // MARK: Input changes
 
-    /// Coalesces the burst of notifications one device change produces.
-    private func scheduleRestart(_ reason: String) {
+    /// Coalesces the burst of notifications one device change produces. A
+    /// restart that fails (a Bluetooth input still connecting) is retried
+    /// after 1, 2, then every 5 seconds; one over the cap waits until the
+    /// oldest restart leaves the minute. So the input's last state is always
+    /// tried while recording.
+    private func scheduleRestart(_ reason: String, after delay: Double = 0.3, attempt: Int = 0) {
         guard isRecording else { return }
         pendingRestart?.cancel()
         let work = DispatchWorkItem { [weak self] in
             guard let self, self.isRecording else { return }
             let now = Date()
             self.restarts = self.restarts.filter { now.timeIntervalSince($0) < 60 }
-            guard self.restarts.count < Self.restartLimit else {
-                FileHandle.standardError.write(Data("warning: mic \(reason) — too many restarts this minute, waiting for the next change\n".utf8))
+            if self.restarts.count >= Self.restartLimit, let oldest = self.restarts.first {
+                let wait = 60 - now.timeIntervalSince(oldest) + 0.1
+                FileHandle.standardError.write(Data("warning: mic \(reason) — too many restarts this minute, trying again in \(Int(wait.rounded(.up))) s\n".utf8))
+                self.scheduleRestart(reason, after: wait, attempt: attempt)
                 return
             }
             self.restarts.append(now)
             FileHandle.standardError.write(Data("mic: \(reason) — restarting capture on the current input\n".utf8))
-            self.restart(voiceProcessing: self.voiceProcessing)
+            if !self.restart(voiceProcessing: self.voiceProcessing) {
+                self.scheduleRestart(reason, after: [1.0, 2.0, 5.0][min(attempt, 2)], attempt: attempt + 1)
+            }
         }
         pendingRestart = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: work)
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
     }
 
-    private func restart(voiceProcessing: Bool) {
+    /// Until a restart succeeds, the time is a gap in the track.
+    private func restart(voiceProcessing: Bool) -> Bool {
         detach()
         track?.resume()
         do {
             try attach(voiceProcessing: voiceProcessing)
+            return true
         } catch {
-            // Until the next input change the time is a gap in the track.
-            FileHandle.standardError.write(Data("mic restart failed: \(error) — microphone not recorded until the next input change\n".utf8))
+            FileHandle.standardError.write(Data("mic restart failed: \(error)\n".utf8))
+            return false
         }
     }
 

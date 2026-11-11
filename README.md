@@ -239,8 +239,8 @@ seconds on the transcript clock (`[]` when none), including an early stop when
 capture could not restart; each transcription writes them to `transcribe.log`.
 The Recordings window shows a line under the participants for gaps of at least
 5 seconds ("Microphone stopped at 6:27. Your voice after that wasn’t
-recorded."). Recordings made before gaps were kept only show an early stop,
-measured from the length of `mic.caf`. Speech the microphone missed is not in
+recorded."). Recordings made before gaps were kept only show an early stop of
+at least 60 seconds, measured from the length of `mic.caf`. Speech the microphone missed is not in
 any file, so no transcript, upload or speaker naming can recover it.
 
 ## Optional transcript cleanup

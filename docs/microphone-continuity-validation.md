@@ -6,12 +6,17 @@
   configuration change it did not survive (`AVAudioEngineConfigurationChange`
   with the engine stopped or the input format changed), or the default input
   device changes, capture restarts on the current default input after 0.3 s
-  (one restart per burst of notifications, at most 10 per minute). The restart
-  uses the configured `mic_voice_processing`; the first-second liveness check
-  runs again and can still fall back to raw capture.
+  (one restart per burst of notifications). A restart that fails, for example
+  while a Bluetooth input is still connecting or reports no format yet, is
+  retried after 1 s, 2 s, then every 5 s; beyond 10 restarts a minute the next
+  waits for the minute to pass. Notifications for an engine already replaced
+  are ignored. The restart uses the configured `mic_voice_processing`; the
+  first-second liveness check runs again and can still fall back to raw
+  capture.
 - The same `mic.caf` continues. `MicTrack` resamples a new input to the track's
-  rate (set by the first input) and writes the time between the last buffer
-  and the first new one as silence, measured on the host clock, so the track
+  rate (set by the first input), flushes the resampler's last milliseconds
+  before a restart, and writes the time between the last buffer and the first
+  new one as silence, measured on the host clock, so the track
   stays aligned with `system.caf`. The liveness fallback no longer deletes the
   file: the silent second stays in the track at its real time.
 - `meta.json` gets `microphone_gaps`: every stretch the microphone missed, in
@@ -24,8 +29,11 @@
   a `mic.slash` symbol, for gaps of at least 5 s: "Microphone stopped at 6:27.
   Your voice after that wasn’t recorded." for an early stop, otherwise
   "Microphone not recorded 20:00–21:00, …". Recordings without
-  `microphone_gaps` (made before this change) only show an early stop, derived
-  from the length of `mic.caf` plus its start offset against `duration_seconds`.
+  `microphone_gaps` (made before this change) only show an early stop of at
+  least 60 s, derived from the length of `mic.caf` plus its start offset
+  against `duration_seconds`. Across the 158 existing recordings, 51 end their
+  microphone 5.6–40.5 s early (the call ended; Quill stopped after its 30 s
+  countdown) and 14 lost 1,084–26,318 s; 60 s separates the two.
 - Nothing about transcription, uploads, the combined meeting recording, cached
   responses or speaker naming changes.
 
@@ -49,9 +57,12 @@ entries for those dates, so their cause could not be confirmed.
     file of 4.5 s at 48 kHz (less the resampler's 20 ms filter latency), the gap
     1.0–3.5 s recorded and silent, the resampled tone at its original level.
   - A stop 0.3 s after the last buffer is no gap; 28 s later is a trailing gap.
+  - Proved once with a throwaway test: 1 s at 24 kHz, a restart, then 1 s at
+    48 kHz writes exactly 96,000 frames (95,040 without flushing the
+    resampler).
   - `microphone_gaps` is read as stored and never re-derived when present
     (even empty); an older recording with a short `mic.caf` yields its early
-    stop; the notice and log texts.
+    stop of 60 s or more, and not a 30 s shortfall; the notice and log texts.
 - Deployed with `sh tools/deploy-app.sh` and opened the Quill window: the
   2026.11.11-1136 detail shows "Microphone stopped at 6:27. Your voice after
   that wasn’t recorded."; a recording with a complete microphone track shows

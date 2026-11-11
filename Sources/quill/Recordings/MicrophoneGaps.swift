@@ -8,6 +8,10 @@ import Foundation
 enum MicrophoneGaps {
     /// Shorter gaps (an input switching over) are logged but not shown.
     static let noticeable = 5.0
+    /// Older recordings often end their microphone up to about 40 s early:
+    /// the call ended and Quill stopped after its 30 s countdown. Only a
+    /// longer shortfall is a loss.
+    static let olderEarlyStop = 60.0
 
     static func read(in directory: URL) -> [MicTrack.Gap] {
         guard let data = try? Data(contentsOf: directory.appendingPathComponent("meta.json")),
@@ -20,7 +24,7 @@ enum MicrophoneGaps {
               let file = try? AVAudioFile(forReading: directory.appendingPathComponent(mic)) else { return [] }
         let offset = Double((json["start_offset_ms"] as? [String: Int])?["mic"] ?? 0) / 1000
         let end = offset + Double(file.length) / file.processingFormat.sampleRate
-        return duration - end >= noticeable ? [MicTrack.Gap(start: end, end: duration)] : []
+        return duration - end >= olderEarlyStop ? [MicTrack.Gap(start: end, end: duration)] : []
     }
 
     /// One line for the Recordings detail; nil when no gap is noticeable.

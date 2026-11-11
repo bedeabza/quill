@@ -51,6 +51,12 @@ final class MicTrack: @unchecked Sendable {
     /// Capture stopped; the next buffer may come from another input.
     func resume() {
         lock.withLock {
+            // The resampler still holds the last input's final few milliseconds.
+            if let converter, let tail = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 4096) {
+                var error: NSError?
+                _ = converter.convert(to: tail, error: &error) { _, state in state.pointee = .endOfStream; return nil }
+                try? write(tail)
+            }
             resuming = true
             converter = nil
         }
