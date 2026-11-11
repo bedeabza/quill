@@ -722,7 +722,9 @@ recording; manually started recordings remain under manual control. While
 recording, the menu also offers **Keep Recording After Meeting Ends**, a
 one-off action for that recording. Manually stopping a recording
 suppresses automatic restart for that meeting until it ends or the toggle is
-turned off and back on.
+turned off and back on. A meeting stopped automatically after its countdown
+starts a new recording on the next check (within about 2 seconds) if it
+reappears.
 
 Detection uses macOS Accessibility, without browser extensions. Brave, Chrome,
 Edge, Safari, Firefox, Arc, and other browsers registered to handle web URLs are
@@ -749,6 +751,18 @@ main window. Muting, video state, chat profiles, and roster membership alone
 never count as speaking. Ambiguous or unavailable indicators leave speech
 unnamed rather than assigning it to another participant.
 
+Desktop Zoom hides its meeting window while you share your screen. Zoom's
+share windows (its share toolbar or status bar, a Stop Share or Pause Share
+button, or a floating panel of participant videos) keep an already detected
+meeting present; they never start one. While no such window is recognized,
+Zoom still running call audio (Core Audio's per-process running state; no
+audio is read) makes the missing meeting window an uncertain read: recording
+continues and the status reads "Meeting status unavailable". When the meeting
+window returns, the same meeting and its speaker tracking continue. Leaving
+the meeting closes the window and releases Zoom's audio, which starts the
+usual 30-second countdown. The labels of Zoom's share windows still need
+confirming in a live share (see [docs/zoom-screen-sharing-validation.md](docs/zoom-screen-sharing-validation.md)).
+
 Browser/app versions and accessible labels vary. Closed tabs and windows are
 end signals; recognized English-language end screens are also supported. A
 hidden control, mute, silence, switching tabs, or a failed Accessibility read
@@ -764,6 +778,8 @@ transcription, and `on_stop` archive hooks retain their normal behavior.
 
 For read-only diagnostics, use `quill meetings` or `quill meetings --watch`.
 The output lists app/service and detection state, without meeting content.
+`--windows` adds each desktop meeting app's window titles and button labels,
+which can include participant names, and whether the app is running audio.
 
 ## CLI
 

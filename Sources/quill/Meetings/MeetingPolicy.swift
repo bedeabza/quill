@@ -86,8 +86,10 @@ struct MeetingPolicy {
         endedAt = nil
     }
 
+    /// A stop while the meeting reads as ended (the automatic countdown) leaves it
+    /// free to start again at once if it returns. Other stops suppress it until it ends.
     mutating func recordingStopped() {
-        if let recordingMeeting { dismissed.insert(recordingMeeting.id) }
+        if let recordingMeeting, endedAt == nil { dismissed.insert(recordingMeeting.id) }
         recording = false
         automaticRecording = false
         recordingMeeting = nil

@@ -55,16 +55,19 @@ struct Meetings: ParsableCommand {
     var speakers = false
     @Flag(help: "Inspect meeting tile accessibility classes without changing the meeting.")
     var speakerBoxes = false
+    @Flag(help: "List desktop meeting-app windows with their titles and button labels, which may include names.")
+    var windows = false
 
     func run() throws {
         let watch = self.watch
         let speakers = self.speakers
         let speakerBoxes = self.speakerBoxes
+        let windows = self.windows
         _ = MainActor.assumeIsolated {
             NSApplication.shared.setActivationPolicy(.accessory)
         }
         Task { @MainActor in
-            do { try await Self.inspect(watch: watch, speakers: speakers, speakerBoxes: speakerBoxes) }
+            do { try await Self.inspect(watch: watch, speakers: speakers, speakerBoxes: speakerBoxes, windows: windows) }
             catch {
                 FileHandle.standardError.write(Data("Meeting inspection failed: \(error)\n".utf8))
                 Darwin.exit(1)
@@ -74,11 +77,12 @@ struct Meetings: ParsableCommand {
         dispatchMain()
     }
 
-    @MainActor private static func inspect(watch: Bool, speakers: Bool, speakerBoxes: Bool) async throws {
+    @MainActor private static func inspect(watch: Bool, speakers: Bool, speakerBoxes: Bool, windows: Bool) async throws {
         let scanner = MeetingScanner()
         repeat {
             let apps = MeetingApp.running()
-            let scan = await scanner.scan(apps: apps, captureSpeakers: speakers || speakerBoxes, inspectBoxes: speakerBoxes)
+            let scan = await scanner.scan(apps: apps, captureSpeakers: speakers || speakerBoxes, inspectBoxes: speakerBoxes,
+                                          inspectWindows: windows)
             var rows: [[String: String]] = []
             var tileSpeakers: [String: [String]] = [:]
             for (id, observation) in scan.observations.sorted(by: { $0.key < $1.key }) {
@@ -91,7 +95,7 @@ struct Meetings: ParsableCommand {
                     tileSpeakers[id] = activity.names
                 }
             }
-            let output: [String: Any] = ["needs_accessibility_permission": scan.needsPermission,
+            var output: [String: Any] = ["needs_accessibility_permission": scan.needsPermission,
                                          "needs_zoom_screen_permission": scan.needsZoomScreenPermission,
                                          "apps": apps.map(\.name), "meetings": rows, "active_speakers": scan.speakers,
                                          "speaker_capture": scan.speakerCaptureStatus,
@@ -106,6 +110,12 @@ struct Meetings: ParsableCommand {
                                          "zoom_border_scores": await scanner.zoomBorderScores(),
                                          "zoom_capture_status": await scanner.zoomCaptureStatus(),
                                          "captions": scan.captions.map { ["speaker": $0.names.first ?? "", "text": $0.text ?? ""] }]
+            if windows {
+                output["windows"] = scan.appWindows.map { window -> [String: Any] in
+                    ["app": window.app, "title": window.title, "buttons": window.buttons, "video_tiles": window.videoTiles,
+                     "call_controls": window.callControls, "zoom_share": window.zoomShare, "audio_running": window.audioRunning]
+                }
+            }
             let data = try JSONSerialization.data(withJSONObject: output, options: [.sortedKeys])
             FileHandle.standardOutput.write(data + Data("\n".utf8))
             if watch { try await Task.sleep(for: .seconds(2)) }

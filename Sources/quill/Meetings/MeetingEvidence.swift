@@ -50,9 +50,33 @@ enum MeetingEvidence {
     }
 
     static func isZoomConferenceWindow(title: String, videoLabels: [String]) -> Bool {
-        title == "Zoom Meeting" && videoLabels.contains {
-            $0.range(of: #", (?:Computer|Phone) audio (?:unmuted|muted)(?:,|$)"#, options: .regularExpression) != nil
+        title == "Zoom Meeting" && videoLabels.contains(where: isZoomParticipantVideo)
+    }
+
+    private static func isZoomParticipantVideo(_ label: String) -> Bool {
+        label.range(of: #", (?:Computer|Phone) audio (?:unmuted|muted)(?:,|$)"#, options: .regularExpression) != nil
+    }
+
+    /// Zoom hides its meeting window while you share your screen and shows a
+    /// share toolbar, a sharing status bar and a floating video panel instead.
+    /// They keep an already established meeting present; they never start one.
+    /// The home window's Share Screen button is not a share in progress.
+    static func isZoomShareWindow(title: String, buttons: [String], videoLabels: [String]) -> Bool {
+        if title.lowercased().hasPrefix("zoom share") { return true }
+        let sharing = buttons.contains { button in
+            let text = button.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+            return ["stop share", "stop sharing", "pause share", "resume share"].contains { text == $0 || text.hasPrefix($0 + " ") }
         }
+        return sharing || videoLabels.contains(where: isZoomParticipantVideo)
+    }
+
+    /// An established native call whose window is no longer listed. Another call
+    /// or Zoom share window keeps it present. A Zoom that still runs audio is
+    /// still in the call, so its missing window is uncertain rather than an end.
+    static func closedCallWindow(_ meeting: DetectedMeeting, anotherCallWindow: Bool, zoomShareWindow: Bool,
+                                 zoomAudioRunning: Bool) -> MeetingObservation {
+        if anotherCallWindow || zoomShareWindow { return .present(meeting) }
+        return zoomAudioRunning ? .unknown : .ended
     }
 
     static func meetCode(in text: String) -> String? {

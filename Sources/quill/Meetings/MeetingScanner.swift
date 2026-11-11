@@ -5,6 +5,7 @@ struct MeetingApp: Sendable {
     let pid: pid_t
     let name: String
     let service: String?
+    var bundleID: String? = nil
 
     @MainActor static func running() -> [MeetingApp] {
         NSWorkspace.shared.runningApplications.compactMap { app in
@@ -27,7 +28,7 @@ struct MeetingApp: Sendable {
             guard service != nil || (handlesWebURLs && handlesHTML) || browsers.contains(where: { bundle == $0 || bundle.hasPrefix($0 + ".") }) else { return nil }
             // Helper processes do not own the meeting's windows.
             guard app.activationPolicy == .regular else { return nil }
-            return MeetingApp(pid: app.processIdentifier, name: app.localizedName ?? "Browser", service: service)
+            return MeetingApp(pid: app.processIdentifier, name: app.localizedName ?? "Browser", service: service, bundleID: app.bundleIdentifier)
         }
     }
 }
@@ -44,6 +45,18 @@ struct MeetingScan: Sendable {
     var needsZoomScreenPermission = false
     var speakerNameWarnings: [String: String] = [:]
     var rosters: [SpeakerObservation] = []
+    var appWindows: [AppWindowSummary] = []
+}
+
+/// Diagnostics only: how a desktop meeting app's windows read right now.
+struct AppWindowSummary: Sendable {
+    let app: String
+    let title: String
+    let buttons: [String]
+    let videoTiles: Int
+    let callControls: Bool
+    let zoomShare: Bool
+    let audioRunning: Bool
 }
 
 /// Accessibility objects stay on this actor. Only value snapshots reach UI code.
@@ -258,7 +271,7 @@ actor MeetingScanner {
     }
 
     func scan(apps: [MeetingApp], captureSpeakers: Bool = false, enableCaptions: Bool = false, inspectBoxes: Bool = false,
-              captionMeetingID: String? = nil) -> MeetingScan {
+              captionMeetingID: String? = nil, inspectWindows: Bool = false) -> MeetingScan {
         var result = MeetingScan()
         let pids = Set(apps.map(\.pid))
         enabledAccessibility.formIntersection(pids)
@@ -280,6 +293,16 @@ actor MeetingScanner {
             }
             guard let elements = children(root, attribute: kAXWindowsAttribute) else { continue }
             let windows = elements.map { readWindow($0, browser: app.service == nil) }
+            if inspectWindows, app.service != nil {
+                let audio = AppAudioActivity.isRunning(pid: app.pid, bundleID: app.bundleID)
+                result.appWindows += windows.map { window in
+                    AppWindowSummary(app: app.name, title: string(window.element, kAXTitleAttribute),
+                                     buttons: window.nodes.filter { $0.role == kAXButtonRole }.map(\.text).filter { !$0.isEmpty },
+                                     videoTiles: window.nodes.filter { $0.role == "AXTabGroup" && $0.roleDescription == "video render" }.count,
+                                     callControls: hasCallControls(window, service: app.service),
+                                     zoomShare: app.service == "Zoom" && isZoomShareWindow(window), audioRunning: audio)
+                }
+            }
             if app.service == "Slack" {
                 let huddles = windows.filter { window in
                     hasCallControls(window, service: "Slack") && window.nodes.contains { node in
@@ -295,7 +318,14 @@ actor MeetingScanner {
                 let ended = window.nodes.contains { MeetingEvidence.isEndMessage($0.text) }
                 if let service = app.service {
                     if leave && (service == "Slack" || !ended) {
+                        // A call window that returns after its window was hidden or
+                        // replaced (Zoom screen sharing) continues the same meeting.
                         let existing = known.values.first { $0.pid == app.pid && CFEqual($0.window, window.element) }
+                            ?? known.values.first { entry in
+                                entry.pid == app.pid && !entry.isBrowser && entry.meeting.service == service
+                                    && endedSince[entry.meeting.id] == nil
+                                    && !windows.contains { CFEqual($0.element, entry.window) }
+                            }
                         let id = existing?.meeting.id ?? nextID(pid: app.pid)
                         let title = MeetingEvidence.title(candidates: meetingTitleCandidates(window.nodes)
                             + [string(window.element, kAXTitleAttribute)], service: service)
@@ -376,9 +406,12 @@ actor MeetingScanner {
                 guard let window = windows.first(where: { CFEqual($0.element, entry.window) }) else {
                     // A closed call window is a positive end signal. If another native
                     // call window appeared, keep recording through layout transitions.
-                    let hasOtherCallControls = windows.contains { hasCallControls($0, service: app.service) }
-                    let anotherCall = app.service != nil && hasOtherCallControls
-                    result.observations[entry.meeting.id] = anotherCall ? .present(entry.meeting) : .ended
+                    let anotherCall = app.service != nil && windows.contains { hasCallControls($0, service: app.service) }
+                    let zoom = app.service == "Zoom" && entry.meeting.service == "Zoom"
+                    let sharing = zoom && !anotherCall && windows.contains(where: isZoomShareWindow)
+                    let audio = zoom && !anotherCall && !sharing && AppAudioActivity.isRunning(pid: app.pid, bundleID: app.bundleID)
+                    result.observations[entry.meeting.id] = MeetingEvidence.closedCallWindow(entry.meeting, anotherCallWindow: anotherCall,
+                                                                                             zoomShareWindow: sharing, zoomAudioRunning: audio)
                     continue
                 }
                 let leave = hasCallControls(window, service: app.service)
@@ -580,6 +613,12 @@ actor MeetingScanner {
         guard service == "Zoom" else { return false }
         let labels = window.nodes.filter { $0.role == "AXTabGroup" && $0.roleDescription == "video render" }.map(\.text)
         return MeetingEvidence.isZoomConferenceWindow(title: string(window.element, kAXTitleAttribute), videoLabels: labels)
+    }
+
+    private func isZoomShareWindow(_ window: Window) -> Bool {
+        MeetingEvidence.isZoomShareWindow(title: string(window.element, kAXTitleAttribute),
+                                          buttons: window.nodes.filter { $0.role == kAXButtonRole }.map(\.text),
+                                          videoLabels: window.nodes.filter { $0.role == "AXTabGroup" && $0.roleDescription == "video render" }.map(\.text))
     }
 
     private func nextID(pid: pid_t) -> String {

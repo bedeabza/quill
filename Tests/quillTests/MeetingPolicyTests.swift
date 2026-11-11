@@ -88,6 +88,15 @@ final class MeetingPolicyTests: XCTestCase {
         XCTAssertNil(policy.recordingMeeting)
     }
 
+    func testAutomaticallyStoppedMeetingRestartsAtOnceWhenItReturns() {
+        var policy = MeetingPolicy()
+        policy.recordingStarted(for: meeting, automatic: true)
+        _ = policy.update([meeting.id: .ended], now: 0)
+        XCTAssertEqual(policy.update([meeting.id: .ended], now: 30), .stop)
+        policy.recordingStopped()
+        XCTAssertEqual(policy.update([meeting.id: .present(meeting)], now: 32), .start(meeting))
+    }
+
     func testManualStopDoesNotPromptAgainForSameMeeting() {
         var policy = MeetingPolicy()
         policy.recordingStarted(for: meeting)
