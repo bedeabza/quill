@@ -1,17 +1,23 @@
 import AVFoundation
+import CoreAudio
 import Foundation
 
 /// Records the default input device to a file via AVAudioEngine, encoding AAC
 /// mono. Buffers stream straight to disk — nothing is held in memory, so
 /// session length is unbounded.
 ///
-/// With voice processing on (the default), Apple's echo canceller subtracts
-/// speaker playback from the mic so the system track doesn't bleed into the
-/// mic track. VoiceProcessingIO is a duplex unit, not an input effect: it
-/// needs a rendered output path and one explicit mono client format on both
-/// sides, or it silently delivers zeroed buffers (rca-001). A first-second
-/// liveness check catches routes where even the correct graph stays silent
-/// and restarts capture raw.
+/// With voice processing on, Apple's echo canceller subtracts speaker playback
+/// from the mic so the system track doesn't bleed into the mic track.
+/// VoiceProcessingIO is a duplex unit, not an input effect: it needs a rendered
+/// output path and one explicit mono client format on both sides, or it
+/// silently delivers zeroed buffers (rca-001). A first-second liveness check
+/// catches routes where even the correct graph stays silent and restarts
+/// capture raw.
+///
+/// The engine stops when the input changes (AirPods connecting or leaving, a
+/// new default input). Capture then restarts on the current default input and
+/// keeps writing the same track; `MicTrack` fills the time in between with
+/// silence and reports it as a gap.
 final class MicRecorder: @unchecked Sendable {
     enum RecorderError: Error, CustomStringConvertible {
         case engineStartFailed(Error)
@@ -27,13 +33,26 @@ final class MicRecorder: @unchecked Sendable {
         }
     }
 
+    /// Restarts beyond this many per minute are dropped, so a route that keeps
+    /// reconfiguring itself cannot loop; the next input change tries again.
+    private static let restartLimit = 10
+
     private var engine = AVAudioEngine()
-    private var file: AVAudioFile?
+    private var track: MicTrack?
     private var url: URL?
     private(set) var isRecording = false
     /// Wall-clock time of the first captured buffer — the track's true start,
     /// used to offset-align the two tracks' transcript timestamps.
     private(set) var firstBufferAt: Date?
+    /// Time the microphone was not recorded, in track seconds; set by `stop()`.
+    private(set) var gaps: [MicTrack.Gap] = []
+
+    private var voiceProcessing = false
+    private var inputDevice: AudioDeviceID?
+    private var configurationObserver: NSObjectProtocol?
+    private var defaultInputListener: AudioObjectPropertyListenerBlock?
+    private var pendingRestart: DispatchWorkItem?
+    private var restarts: [Date] = []
 
     // Liveness check state (voice-processing path only). Written from the tap
     // callback, read on main when deciding to fall back.
@@ -46,24 +65,29 @@ final class MicRecorder: @unchecked Sendable {
     func start(writingTo url: URL) throws {
         guard !isRecording else { return }
         self.url = url
-        try attach(voiceProcessing: Config.micVoiceProcessing())
+        gaps = []
+        voiceProcessing = Config.micVoiceProcessing()
+        try attach(voiceProcessing: voiceProcessing)
         isRecording = true
+        listenForDefaultInput()
     }
 
     /// Stop capturing and finalize the file. Idempotent.
     func stop() {
         guard isRecording else { return }
         isRecording = false
-        engine.stop()
-        engine.inputNode.removeTap(onBus: 0)
-        file = nil
+        pendingRestart?.cancel()
+        stopListeningForDefaultInput()
+        detach()
+        gaps = track?.finish(at: Self.now()) ?? []
+        track = nil
     }
 
     // MARK: -
 
-    /// Build the engine graph, create the AAC file, and start capture. Called
-    /// once at start, and a second time (voiceProcessing: false) if the
-    /// liveness check trips.
+    /// Build the engine graph on the current default input and start capture,
+    /// creating the AAC file on the first call. Called at start, after an
+    /// input change, and with voiceProcessing: false if the liveness check trips.
     private func attach(voiceProcessing: Bool) throws {
         engine = AVAudioEngine()
         let input = engine.inputNode
@@ -100,20 +124,24 @@ final class MicRecorder: @unchecked Sendable {
             throw RecorderError.formatUnsupported(inputFormat)
         }
 
-        let settings: [String: Any] = [
-            AVFormatIDKey: kAudioFormatMPEG4AAC,
-            AVSampleRateKey: monoFormat.sampleRate,
-            AVNumberOfChannelsKey: 1,
-        ]
-        do {
-            file = try AVAudioFile(
-                forWriting: url!,
-                settings: settings,
-                commonFormat: monoFormat.commonFormat,
-                interleaved: monoFormat.isInterleaved
-            )
-        } catch {
-            throw RecorderError.fileCreationFailed(error)
+        if track == nil {
+            // The first input's rate is the track's rate; later inputs are
+            // resampled to it.
+            let settings: [String: Any] = [
+                AVFormatIDKey: kAudioFormatMPEG4AAC,
+                AVSampleRateKey: monoFormat.sampleRate,
+                AVNumberOfChannelsKey: 1,
+            ]
+            do {
+                track = MicTrack(file: try AVAudioFile(
+                    forWriting: url!,
+                    settings: settings,
+                    commonFormat: monoFormat.commonFormat,
+                    interleaved: monoFormat.isInterleaved
+                ))
+            } catch {
+                throw RecorderError.fileCreationFailed(error)
+            }
         }
 
         if voice {
@@ -135,8 +163,16 @@ final class MicRecorder: @unchecked Sendable {
             try engine.start()
         } catch {
             input.removeTap(onBus: 0)
-            file = nil
             throw RecorderError.engineStartFailed(error)
+        }
+        inputDevice = Self.defaultInputDevice()
+        let engine = engine
+        configurationObserver = NotificationCenter.default.addObserver(
+            forName: .AVAudioEngineConfigurationChange, object: engine, queue: .main
+        ) { [weak self] _ in
+            // A route change the engine survived needs nothing.
+            guard let self, !engine.isRunning || engine.inputNode.outputFormat(forBus: 0) != inputFormat else { return }
+            self.scheduleRestart("input configuration changed")
         }
 
         let report = "mic: voiceProcessing=\(input.isVoiceProcessingEnabled) "
@@ -144,17 +180,33 @@ final class MicRecorder: @unchecked Sendable {
         FileHandle.standardError.write(Data(report.utf8))
     }
 
+    private func detach() {
+        if let configurationObserver { NotificationCenter.default.removeObserver(configurationObserver) }
+        configurationObserver = nil
+        engine.stop()
+        engine.inputNode.removeTap(onBus: 0)
+    }
+
+    /// Writes one buffer at the host time of its first sample.
+    private func capture(_ buffer: AVAudioPCMBuffer, at when: AVAudioTime) {
+        if firstBufferAt == nil { firstBufferAt = Date() }
+        let time = when.isHostTimeValid ? AVAudioTime.seconds(forHostTime: when.hostTime) : Self.now()
+        do {
+            try track?.append(buffer, at: time)
+        } catch {
+            FileHandle.standardError.write(Data("mic track write failed: \(error)\n".utf8))
+        }
+    }
+
     /// Voice-processing path: the unit converts to the mono client format
-    /// itself, so tapped buffers write straight to the file. Tracks signal
+    /// itself, so tapped buffers write straight to the track. Tracks signal
     /// peak over the first second — an unsupported route (device pair, macOS
     /// AUVPAggregate defects) delivers callbacks full of digital zeros, and
     /// the only recovery is restarting raw.
     private func installVoiceTap(on input: AVAudioInputNode, format: AVAudioFormat) {
         let checkFrames = Int(format.sampleRate)
-        input.installTap(onBus: 0, bufferSize: 4096, format: format) { [weak self] buffer, _ in
-            guard let self, let file = self.file else { return }
-            if self.firstBufferAt == nil { self.firstBufferAt = Date() }
-
+        input.installTap(onBus: 0, bufferSize: 4096, format: format) { [weak self] buffer, when in
+            guard let self else { return }
             if !self.livenessSettled {
                 let frames = Int(buffer.frameLength)
                 if let data = buffer.floatChannelData?[0] {
@@ -167,16 +219,10 @@ final class MicRecorder: @unchecked Sendable {
                     self.livenessSettled = true
                     if self.livenessPeak == 0 {
                         DispatchQueue.main.async { self.fallBackToRaw() }
-                        return
                     }
                 }
             }
-
-            do {
-                try file.write(from: buffer)
-            } catch {
-                FileHandle.standardError.write(Data("mic track write failed: \(error)\n".utf8))
-            }
+            self.capture(buffer, at: when)
         }
     }
 
@@ -190,44 +236,97 @@ final class MicRecorder: @unchecked Sendable {
         guard let converter = AVAudioConverter(from: inputFormat, to: monoFormat) else {
             throw RecorderError.formatUnsupported(inputFormat)
         }
-        input.installTap(onBus: 0, bufferSize: 4096, format: inputFormat) { [weak self] buffer, _ in
-            guard let self, let file = self.file else { return }
-            if self.firstBufferAt == nil { self.firstBufferAt = Date() }
-            guard let mono = AVAudioPCMBuffer(
+        input.installTap(onBus: 0, bufferSize: 4096, format: inputFormat) { [weak self] buffer, when in
+            guard let self, let mono = AVAudioPCMBuffer(
                 pcmFormat: monoFormat,
                 frameCapacity: buffer.frameCapacity
             ) else { return }
             do {
                 try converter.convert(to: mono, from: buffer)
-                try file.write(from: mono)
             } catch {
                 FileHandle.standardError.write(Data("mic track write failed: \(error)\n".utf8))
+                return
             }
+            self.capture(mono, at: when)
         }
     }
 
     /// The voice-processing route delivered a full second of digital silence:
-    /// tear the engine down and restart raw, discarding the silent prefix so
-    /// the track's timestamps start at real audio.
+    /// restart raw for the rest of this input. The silent second stays in the
+    /// track, so its timestamps are unchanged.
     private func fallBackToRaw() {
         guard isRecording else { return }
         FileHandle.standardError.write(Data(
             "warning: voice processing delivered silence — restarting mic raw\n".utf8
         ))
-        engine.stop()
-        engine.inputNode.removeTap(onBus: 0)
-        file = nil
-        firstBufferAt = nil
-        if let url {
-            try? FileManager.default.removeItem(at: url)
+        restart(voiceProcessing: false)
+    }
+
+    // MARK: Input changes
+
+    /// Coalesces the burst of notifications one device change produces.
+    private func scheduleRestart(_ reason: String) {
+        guard isRecording else { return }
+        pendingRestart?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, self.isRecording else { return }
+            let now = Date()
+            self.restarts = self.restarts.filter { now.timeIntervalSince($0) < 60 }
+            guard self.restarts.count < Self.restartLimit else {
+                FileHandle.standardError.write(Data("warning: mic \(reason) — too many restarts this minute, waiting for the next change\n".utf8))
+                return
+            }
+            self.restarts.append(now)
+            FileHandle.standardError.write(Data("mic: \(reason) — restarting capture on the current input\n".utf8))
+            self.restart(voiceProcessing: self.voiceProcessing)
         }
+        pendingRestart = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: work)
+    }
+
+    private func restart(voiceProcessing: Bool) {
+        detach()
+        track?.resume()
         do {
-            try attach(voiceProcessing: false)
+            try attach(voiceProcessing: voiceProcessing)
         } catch {
-            FileHandle.standardError.write(Data(
-                "mic raw fallback failed: \(error) — session continues without mic track\n".utf8
-            ))
-            file = nil
+            // Until the next input change the time is a gap in the track.
+            FileHandle.standardError.write(Data("mic restart failed: \(error) — microphone not recorded until the next input change\n".utf8))
         }
     }
+
+    private static func defaultInputAddress() -> AudioObjectPropertyAddress {
+        AudioObjectPropertyAddress(mSelector: kAudioHardwarePropertyDefaultInputDevice,
+                                   mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
+    }
+
+    /// A new default input may not stop the engine (the old device is still
+    /// there), so it is watched separately.
+    private func listenForDefaultInput() {
+        let listener: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
+            guard let self, Self.defaultInputDevice() != self.inputDevice else { return }
+            self.scheduleRestart("default input changed")
+        }
+        var address = Self.defaultInputAddress()
+        if AudioObjectAddPropertyListenerBlock(AudioObjectID(kAudioObjectSystemObject), &address, .main, listener) == noErr {
+            defaultInputListener = listener
+        }
+    }
+
+    private func stopListeningForDefaultInput() {
+        guard let listener = defaultInputListener else { return }
+        var address = Self.defaultInputAddress()
+        AudioObjectRemovePropertyListenerBlock(AudioObjectID(kAudioObjectSystemObject), &address, .main, listener)
+        defaultInputListener = nil
+    }
+
+    private static func defaultInputDevice() -> AudioDeviceID? {
+        var device = AudioDeviceID(0)
+        var size = UInt32(MemoryLayout<AudioDeviceID>.size)
+        var address = defaultInputAddress()
+        guard AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &size, &device) == noErr else { return nil }
+        return device
+    }
+
+    private static func now() -> Double { AVAudioTime.seconds(forHostTime: mach_absolute_time()) }
 }

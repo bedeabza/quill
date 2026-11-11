@@ -56,6 +56,8 @@ final class RecordingsModel {
     /// Preview of the selected transcript, the verified named copy when the
     /// recording has one; nil while nothing is selected or loading.
     private(set) var transcript: TranscriptPreview?
+    /// Why part of the selected recording has no microphone audio; nil when it all does.
+    private(set) var microphoneNotice: String?
     /// Voices of the selected Scribe transcript with their pre-selected names;
     /// nil when the recording has none to name.
     private(set) var speakerNames: SpeakerNames.State?
@@ -289,7 +291,7 @@ final class RecordingsModel {
     /// transcript files change; results for an older request are dropped.
     private func reloadTranscript() {
         guard let entry = selectedEntry else {
-            transcriptRequest = UUID(); transcriptSignature = nil; transcript = nil; speakerNames = nil
+            transcriptRequest = UUID(); transcriptSignature = nil; transcript = nil; speakerNames = nil; microphoneNotice = nil
             return
         }
         let named = entry.hasNamedTranscript
@@ -301,20 +303,22 @@ final class RecordingsModel {
         }.joined(separator: ":")
         let signature = entry.directory.path + "/" + base + "/" + stamps
         guard signature != transcriptSignature else { return }
-        if transcriptSignature?.hasPrefix(entry.directory.path + "/") != true { speakerNames = nil }
+        if transcriptSignature?.hasPrefix(entry.directory.path + "/") != true { speakerNames = nil; microphoneNotice = nil }
         if transcriptSignature?.hasPrefix(entry.directory.path + "/" + base + "/") != true { transcript = nil }
         transcriptSignature = signature
         let request = UUID()
         transcriptRequest = request
         Task { [weak self] in
-            let (preview, names) = await Task.detached(priority: .utility) {
+            let (preview, names, notice) = await Task.detached(priority: .utility) {
                 ((try? RecordingsLibrary.transcript(in: entry.directory, named: named))
                     ?? .empty("Could not read the transcript. Open its folder to inspect it."),
-                 SpeakerNames.state(in: entry.directory))
+                 SpeakerNames.state(in: entry.directory),
+                 MicrophoneGaps.notice(MicrophoneGaps.read(in: entry.directory), duration: entry.duration))
             }.value
             guard let self, self.transcriptRequest == request else { return }
             if self.transcript != preview { self.transcript = preview }
             if self.speakerNames != names { self.speakerNames = names }
+            if self.microphoneNotice != notice { self.microphoneNotice = notice }
         }
     }
 

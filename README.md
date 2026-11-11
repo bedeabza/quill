@@ -213,7 +213,7 @@ Each session lands in `~/Recordings/<yyyy.MM.dd-HHmm>/`:
 |---|---|
 | `mic.caf` | your side (default input device, AAC) |
 | `system.caf` | everything the Mac played — the other side of the call (AAC) |
-| `meta.json` | start/end timestamps, duration, per-track start offsets |
+| `meta.json` | start/end timestamps, duration, per-track start offsets, `microphone_gaps` |
 | `transcript.json` | canonical transcript — engine provenance + timed, speaker-tagged segments |
 | `transcript.md` | the same transcript rendered for reading |
 | `meeting-audio.wav` | ElevenLabs only: one aligned 16 kHz mono recording, with playback-reference echo reduction before mixing |
@@ -228,6 +228,20 @@ transcribes tracks separately and performs local speaker separation. ElevenLabs
 receives one prepared meeting recording and supplies one set of speaker IDs.
 CAF needs no finalization pass, so audio already written
 remains readable if the process exits unexpectedly.
+
+The microphone follows the default input. When it changes during a recording
+(AirPods connecting or disconnecting, another input chosen in System Settings),
+capture restarts on the new input and continues the same `mic.caf`, resampled
+to the track's rate if needed. The time in between, usually under a second, is
+written as silence so the track stays aligned with `system.caf`.
+`microphone_gaps` in `meta.json` lists every stretch the microphone missed, in
+seconds on the transcript clock (`[]` when none), including an early stop when
+capture could not restart; each transcription writes them to `transcribe.log`.
+The Recordings window shows a line under the participants for gaps of at least
+5 seconds ("Microphone stopped at 6:27. Your voice after that wasn’t
+recorded."). Recordings made before gaps were kept only show an early stop,
+measured from the length of `mic.caf`. Speech the microphone missed is not in
+any file, so no transcript, upload or speaker naming can recover it.
 
 ## Optional transcript cleanup
 

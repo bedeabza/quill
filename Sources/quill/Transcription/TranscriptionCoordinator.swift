@@ -201,6 +201,8 @@ actor TranscriptionCoordinator {
         if (engineOverride?.rawValue ?? Config.transcriptionEngine()) == "elevenlabs", remoteSpeakerCount != nil {
             throw TranscriptionFailure("--remote-speakers is only supported by local diarization. ElevenLabs infers speakers in Scribe.")
         }
+        let gaps = MicrophoneGaps.read(in: dir)
+        if !gaps.isEmpty { log(dir, MicrophoneGaps.log(gaps)) }
         // Snapshot the selection for both tracks. Menu changes affect the next job.
         let engine = try await preparedEngine(kind: engineOverride, offline: offline)
         let observationURL = dir.appendingPathComponent("speaker-observations.jsonl")

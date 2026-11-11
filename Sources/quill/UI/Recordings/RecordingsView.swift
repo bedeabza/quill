@@ -355,6 +355,9 @@ private struct RecordingDetail: View {
                 Label(RecordingFormat.when(entry), systemImage: "calendar")
                 Label(entry.participants.isEmpty ? "No participants recorded" : entry.participants.joined(separator: ", "),
                       systemImage: "person.2")
+                if let notice = model.microphoneNotice {
+                    Label(notice, systemImage: "mic.slash")
+                }
             }
             .font(.callout)
             .foregroundStyle(.secondary)

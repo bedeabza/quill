@@ -128,6 +128,12 @@ final class RecordingSession {
                 "system": Int(systemStart.timeIntervalSince(earliest) * 1000),
             ],
         ]
+        // On the meeting clock, like transcript timestamps. A mic that never
+        // delivered audio missed the whole recording.
+        let micOffset = micStart.timeIntervalSince(earliest)
+        let gaps = mic.firstBufferAt == nil ? [MicTrack.Gap(start: 0, end: ended.timeIntervalSince(earliest))]
+            : mic.gaps.map { MicTrack.Gap(start: $0.start + micOffset, end: $0.end + micOffset) }
+        meta["microphone_gaps"] = gaps.map { ["start": ($0.start * 1000).rounded() / 1000, "end": ($0.end * 1000).rounded() / 1000] }
         if let localSpeakerName, !sharedMicrophone { meta["local_speaker_name"] = localSpeakerName }
         if let meetingTitle { meta["meeting_title"] = meetingTitle }
         if let data = try? JSONSerialization.data(
