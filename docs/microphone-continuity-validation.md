@@ -63,6 +63,14 @@ entries for those dates, so their cause could not be confirmed.
   - `microphone_gaps` is read as stored and never re-derived when present
     (even empty); an older recording with a short `mic.caf` yields its early
     stop of 60 s or more, and not a 30 s shortfall; the notice and log texts.
+- A real meeting recorded on the deployed build (2026.11.11-1419, 7 min)
+  changed input near its end: the unified log shows `default input device
+  changed` and `Device 190 died!` at 14:26:23, then capture on the built-in
+  microphone. `meta.json` recorded one gap, 419.8–420.1 s; the track is
+  digital silence there and speech before and after (−36 and −38 dBFS);
+  `mic.caf` ends at 425.1 s on the meeting clock against 424.8 s for
+  `system.caf`; `transcribe.log` lists the gap. That build had the first
+  version of the restart (without the retry and flush added after review).
 - Deployed with `sh tools/deploy-app.sh` and opened the Quill window: the
   2026.11.11-1136 detail shows "Microphone stopped at 6:27. Your voice after
   that wasn’t recorded."; a recording with a complete microphone track shows
