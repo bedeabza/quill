@@ -28,6 +28,39 @@ final class RecordingsModel {
     /// `entries` matching `query`, grouped by day, newest first.
     private(set) var sections: [DaySection] = []
     private(set) var activity: [URL: TranscriptionCoordinator.Activity] = [:]
+    private(set) var s3Enabled = Config.s3().enabled
+    private(set) var s3Errors: [URL: String] = [:]
+    private(set) var s3Busy: Set<URL> = []
+
+    private(set) var s3Actions: Set<URL> = []
+
+    func canSyncToS3(_ entry: RecordingEntry) -> Bool {
+        entry.hasTranscript && status(of: entry) == .ready && !s3Busy.contains(entry.directory)
+            && !s3Actions.contains(entry.directory) && !isGeneratingTitle(entry)
+            && !(selection == entry.directory && (hasSpeakerChanges || isApplyingSpeakerNames))
+    }
+
+    func uploadToS3(_ entry: RecordingEntry) {
+        guard canSyncToS3(entry) else { return }
+        s3Actions.insert(entry.directory)
+        Task { [uploads] in
+            do { try await uploads.syncNow(entry.directory) }
+            catch { s3Errors[entry.directory] = String(describing: error) }
+            s3Actions.remove(entry.directory)
+            refresh()
+        }
+    }
+
+    func setS3Blocked(_ blocked: Bool, for entry: RecordingEntry) {
+        guard !s3Actions.contains(entry.directory) else { return }
+        s3Actions.insert(entry.directory)
+        Task { [uploads] in
+            do { try await uploads.setBlocked(blocked, in: entry.directory) }
+            catch { s3Errors[entry.directory] = String(describing: error) }
+            s3Actions.remove(entry.directory)
+            refresh()
+        }
+    }
     /// Recordings whose title is being generated.
     private(set) var titleBusy: Set<URL> = []
     /// Why `root` could not be read; nil when it could.
@@ -44,8 +77,15 @@ final class RecordingsModel {
         didSet {
             guard selection != oldValue else { return }
             regenerateError = nil
+            exportNotice = nil
             editingSpeakerNames = false
+            speakerNameEditorCollapsed = false
             speakerNamesError = nil
+            speakerNameDrafts = [:]
+            speakerGroupDrafts = [:]
+            participantAliasDrafts = nil
+            speakerNavigation = SpeakerTurnNavigation()
+            speakerTurnTarget = nil
             reloadTranscript()
         }
     }
@@ -63,11 +103,108 @@ final class RecordingsModel {
     private(set) var speakerNames: SpeakerNames.State?
     /// Shows the speaker pickers although the named copy names everyone.
     var editingSpeakerNames = false
+    var speakerNameEditorCollapsed = false
     private(set) var speakerNamesError: String?
     private(set) var isApplyingSpeakerNames = false
+    /// Edits preview immediately; only Apply Names writes the named copy.
+    var speakerNameDrafts: [String: String] = [:]
+    var speakerGroupDrafts: [String: String] = [:]
+    var participantAliasDrafts: [String: String]? = nil
+    var hasSpeakerChanges: Bool { !speakerNameDrafts.isEmpty || !speakerGroupDrafts.isEmpty || participantAliasDrafts != nil }
+
+    func speakerGroup(for row: SpeakerNames.Row) -> String { speakerGroupDrafts[row.speaker] ?? row.personID ?? row.speaker }
+
+    func linkSpeaker(_ row: SpeakerNames.Row, to other: SpeakerNames.Row) {
+        let from = speakerGroup(for: row), to = speakerGroup(for: other), name = speakerName(for: other)
+        for member in speakerNames?.rows ?? [] where speakerGroup(for: member) == from {
+            speakerGroupDrafts[member.speaker] = to
+            speakerNameDrafts[member.speaker] = name
+        }
+        editingSpeakerNames = true
+    }
+
+    func separateSpeaker(_ row: SpeakerNames.Row) {
+        speakerGroupDrafts[row.speaker] = UUID().uuidString
+        editingSpeakerNames = true
+    }
+
+    func participantAlias(for name: String) -> String {
+        var identities = SpeakerIdentities()
+        identities.aliases = participantAliasDrafts ?? speakerNames?.aliases ?? [:]
+        return identities.canonicalName(name)
+    }
+
+    func setParticipantAlias(_ name: String, to target: String?) {
+        var aliases = participantAliasDrafts ?? speakerNames?.aliases ?? [:]
+        let key = SpeakerIdentities.key(name)
+        if let target {
+            // The UI always points directly to a main name; keep aliases flat.
+            let canonical = participantAlias(for: target)
+            guard SpeakerIdentities.key(canonical) != key else { return }
+            for (alias, value) in aliases where SpeakerIdentities.key(value) == key { aliases[alias] = canonical }
+            aliases[key] = canonical
+        } else { aliases.removeValue(forKey: key) }
+        participantAliasDrafts = aliases
+        editingSpeakerNames = true
+    }
+
+    private(set) var speakerTurnTarget: Int?
+    private(set) var speakerTurnRequest = 0
+    @ObservationIgnored private var speakerNavigation = SpeakerTurnNavigation()
+
+    func speakerName(for row: SpeakerNames.Row) -> String {
+        speakerNameDrafts[row.speaker] ?? row.name ?? ""
+    }
+
+    func setSpeakerName(_ name: String, for speaker: String) {
+        if let row = speakerNames?.rows.first(where: { $0.speaker == speaker }) {
+            let group = speakerGroup(for: row)
+            for member in speakerNames?.rows ?? [] where speakerGroup(for: member) == group { speakerNameDrafts[member.speaker] = name }
+        } else { speakerNameDrafts[speaker] = name }
+        editingSpeakerNames = true
+    }
+
+    func displayName(for turn: TranscriptTurn) -> String {
+        guard let id = turn.speakerID, let draft = speakerNameDrafts[id] else { return turn.speaker }
+        return SpeakerAttribution.cleanName(draft) ?? SpeakerNames.label(id)
+    }
+
+    func discardSpeakerNameChanges() {
+        speakerNameDrafts = [:]
+        speakerGroupDrafts = [:]
+        participantAliasDrafts = nil
+        editingSpeakerNames = false
+        speakerNamesError = nil
+    }
+
+    func openSpeakerNameEditor() {
+        speakerNameEditorCollapsed = false
+        editingSpeakerNames = true
+    }
+
+    func applySpeakerNameDrafts() {
+        guard let state = speakerNames else { return }
+        guard state.rows.allSatisfy({ row in
+            let raw = speakerName(for: row).trimmingCharacters(in: .whitespacesAndNewlines)
+            return raw.isEmpty || SpeakerAttribution.cleanName(raw) != nil
+        }) else {
+            speakerNamesError = "Enter a name of at most 100 characters without line breaks, or choose Unknown."
+            return
+        }
+        let names = Dictionary(uniqueKeysWithValues: state.rows.map { ($0.speaker, SpeakerAttribution.cleanName(speakerName(for: $0))) })
+        applySpeakerNames(names)
+    }
+
+    func nextSpeakerTurn(_ speaker: String) {
+        guard case .turns(let turns) = transcript else { return }
+        let identity = turns.first(where: { $0.speakerID == speaker })?.navigationID ?? speaker
+        guard let turn = speakerNavigation.next(identity, in: turns) else { return }
+        speakerTurnTarget = turn.id
+        speakerTurnRequest += 1
+    }
     var showsSpeakerNames: Bool {
         guard let state = speakerNames, !state.rows.isEmpty else { return false }
-        return !state.complete || editingSpeakerNames
+        return (!state.complete || editingSpeakerNames) && !speakerNameEditorCollapsed
     }
 
     /// Engine for the next `regenerate()`; does not change the default engine.
@@ -78,13 +215,31 @@ final class RecordingsModel {
     var showsCloudOptions: Bool { regenerateEngine == .elevenLabs }
     private(set) var isEnqueuing = false
     private(set) var regenerateError: String?
+    var isExportingHTML = false
+    private(set) var exportNotice: String?
+
+    /// Freeze the displayed discussion before the save panel opens. Exporting
+    /// another row never consumes name drafts from the current recording.
+    func htmlExport(for entry: RecordingEntry) async throws -> RecordingHTMLExport.Document {
+        guard entry.hasTranscript else { throw TranscriptionFailure("Transcribe this recording before exporting it.") }
+        let displayed = selection == entry.directory ? transcript : nil
+        let names = selection == entry.directory ? speakerNameDrafts : [:]
+        return try await Task.detached(priority: .userInitiated) {
+            let preview = try displayed ?? RecordingsLibrary.transcript(in: entry.directory, named: entry.hasNamedTranscript)
+            return try RecordingHTMLExport.make(entry: entry, preview: preview, names: names)
+        }.value
+    }
+
+    func didExportHTML(_ destination: URL, for entry: RecordingEntry) {
+        if selection == entry.directory { exportNotice = "Exported \(destination.lastPathComponent)" }
+    }
 
     var selectedStatus: RecordingStatus? { selectedEntry.map { status(of: $0) } }
     /// Detail line for the selected recording: queue progress, failures, or nil.
     var selectedMessage: String? {
         guard let entry = selectedEntry else { return nil }
         if isEnqueuing { return "Adding recording to the queue…" }
-        return regenerateError ?? Self.message(entry, activity: activity[entry.directory], allActivity: activity)
+        return regenerateError ?? Self.message(entry, activity: activity[entry.directory], allActivity: activity) ?? exportNotice
     }
     var canRegenerate: Bool { selectedEntry.map(canRegenerate) ?? false }
     func canRegenerate(_ entry: RecordingEntry) -> Bool {
@@ -92,6 +247,8 @@ final class RecordingsModel {
         switch activity[entry.directory] { case .queued, .processing: return false; default: return true }
     }
 
+    @ObservationIgnored private let uploads: S3UploadCoordinator
+    @ObservationIgnored private let uploadCorrection: @Sendable (URL) async -> Void
     @ObservationIgnored private let transcription: TranscriptionCoordinator
     @ObservationIgnored private let titles: RecordingTitleCoordinator
     @ObservationIgnored private let recordingDirectory: @MainActor () -> URL?
@@ -106,13 +263,17 @@ final class RecordingsModel {
 
     /// `recordingDirectory` is the folder of the recording in progress, if any.
     init(root: URL, transcription: TranscriptionCoordinator, titles: RecordingTitleCoordinator = .shared,
-         recordingDirectory: @escaping @MainActor () -> URL? = { nil }) {
+         recordingDirectory: @escaping @MainActor () -> URL? = { nil },
+         uploadCorrection: @escaping @Sendable (URL) async -> Void = { await S3UploadCoordinator.shared.enqueue($0) },
+         uploads: S3UploadCoordinator = .shared) {
         let root = RecordingsLibrary.canonicalDirectory(root)
         self.root = root
         self.defaultRoot = root
         self.transcription = transcription
         self.titles = titles
         self.recordingDirectory = recordingDirectory
+        self.uploadCorrection = uploadCorrection
+        self.uploads = uploads
     }
 
     // MARK: Lifecycle
@@ -131,14 +292,19 @@ final class RecordingsModel {
     func refresh() {
         guard refreshTask == nil else { return }
         let requestedRoot = root, requestedGeneration = generation
-        refreshTask = Task { [weak self, transcription, titles] in
+        refreshTask = Task { [weak self, transcription, titles, uploads] in
             let states = await transcription.activity()
             let titleStates = await titles.busy()
+            let uploadErrors = await uploads.errors()
+            let uploadsBusy = await uploads.busy()
             let result = await Task.detached(priority: .utility) { Result { try RecordingsLibrary.entries(in: requestedRoot) } }.value
             guard let self else { return }
             self.refreshTask = nil
             guard self.root == requestedRoot, self.generation == requestedGeneration else { self.refresh(); return }
             self.activity = states
+            self.s3Enabled = Config.s3().enabled
+            self.s3Errors = uploadErrors
+            self.s3Busy = uploadsBusy
             self.titleBusy = titleStates
             switch result {
             case .success(let rows): self.entries = rows; self.loadError = nil
@@ -203,14 +369,23 @@ final class RecordingsModel {
     func applySpeakerNames(_ names: [String: String?]) {
         guard let entry = selectedEntry, !isApplyingSpeakerNames else { return }
         let chosen = names.compactMapValues { $0 }
+        let groups = Dictionary(uniqueKeysWithValues: (speakerNames?.rows ?? []).map { ($0.speaker, speakerGroup(for: $0)) })
+        let aliases = participantAliasDrafts ?? speakerNames?.aliases ?? [:]
+        let expectedFingerprint = speakerNames?.transcriptFingerprint
         isApplyingSpeakerNames = true
         speakerNamesError = nil
-        Task { [weak self] in
-            let result = await Task.detached(priority: .userInitiated) { Result { try SpeakerNames.apply(chosen, in: entry.directory) } }.value
+        Task { [weak self, uploadCorrection] in
+            let result = await Task.detached(priority: .userInitiated) { Result { try SpeakerNames.apply(chosen, in: entry.directory, groups: groups, aliases: aliases, expectedFingerprint: expectedFingerprint) } }.value
+            if case .success = result { await uploadCorrection(entry.directory) }
             guard let self else { return }
             self.isApplyingSpeakerNames = false
+            guard self.selection == entry.directory else { self.refresh(); return }
             switch result {
-            case .success: if self.selection == entry.directory { self.editingSpeakerNames = false }
+            case .success:
+                self.discardSpeakerNameChanges()
+                self.speakerNavigation = SpeakerTurnNavigation()
+                self.transcriptSignature = nil
+                self.reloadTranscript()
             case .failure(let error): self.speakerNamesError = (error as? TranscriptionFailure)?.description ?? error.localizedDescription
             }
             self.refresh()
@@ -296,7 +471,7 @@ final class RecordingsModel {
         }
         let named = entry.hasNamedTranscript
         let base = named ? "transcript-named" : "transcript"
-        let files = [base + ".json", base + ".md", "transcript.json", "transcript-named.json", "speaker-mapping.json"]
+        let files = [base + ".json", base + ".md", "transcript.json", "transcript-named.json", "speaker-mapping.json", SpeakerIdentities.filename]
         let stamps = files.map { file in
             let values = try? entry.directory.appendingPathComponent(file).resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey])
             return "\(values?.contentModificationDate?.timeIntervalSince1970 ?? 0):\(values?.fileSize ?? 0)"
@@ -319,6 +494,7 @@ final class RecordingsModel {
             if self.transcript != preview { self.transcript = preview }
             if self.speakerNames != names { self.speakerNames = names }
             if self.microphoneNotice != notice { self.microphoneNotice = notice }
+            if !self.editingSpeakerNames, !self.isApplyingSpeakerNames { self.speakerNameDrafts = [:] }
         }
     }
 

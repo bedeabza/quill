@@ -120,20 +120,20 @@ final class ElevenLabsTranscriptsTests: XCTestCase, @unchecked Sendable {
 
     /// Recording 2026.11.05-1704 (Teams 1:1 call): no tile evidence for either
     /// voice. One voice is almost only microphone, the other remote.
-    func testTwoPersonCallIsNamedByMicrophoneMajorityThenElimination() {
+    func testMicrophoneMajorityAndMatchingRosterNeverIdentifyPeople() {
         let voices = [segment(start: 0, end: 60), segment("speaker_1", start: 60, end: 100)]
         let output = combined(voices, local: [(0, 50), (61, 62)], remote: [(59.5, 60), (62, 90)], roster: ["Patranca, Bogdan - CTP"])
-        XCTAssertTrue(output.report.accepted)
-        XCTAssertEqual(output.report.speakers.map(\.name), ["Dragos Badea", "Patranca, Bogdan - CTP"])
-        XCTAssertEqual(output.report.speakers.map(\.attribution), ["local_microphone_majority", "roster_elimination"])
+        XCTAssertFalse(output.report.accepted)
+        XCTAssertEqual(output.report.speakers.map(\.name), [nil, nil])
+        XCTAssertEqual(output.report.speakers.map(\.attribution), [nil, nil])
         XCTAssertEqual(output.report.speakers.map(\.accepted), [false, false], "inferred names never pass as evidence")
         XCTAssertEqual(output.report.speakers[0].local_seconds ?? 0, 50, accuracy: 0.000001)
-        XCTAssertEqual(output.named?.segments.map(\.attribution), ["local_microphone_majority", "roster_elimination"])
+        XCTAssertNil(output.named)
         XCTAssertTrue(output.original.segments.allSatisfy { $0.speaker_name == nil })
         XCTAssertNil(combined(voices, local: [(0, 50)], remote: [(62, 90)], roster: ["Patranca, Bogdan - CTP"], inferNames: false).named)
     }
 
-    func testInferenceNeedsOneClearMicrophoneVoiceAndMatchingCounts() {
+    func testMultipleLocalVoicesAndExtraRosterNamesRemainUnknown() {
         let two = [segment(start: 0, end: 60), segment("speaker_1", start: 60, end: 100)]
         // A second voice that is mostly microphone too (someone in the room).
         let room = combined(two, local: [(0, 50), (60, 80)], remote: [(80, 90)], roster: ["Bob"])
@@ -144,24 +144,40 @@ final class ElevenLabsTranscriptsTests: XCTestCase, @unchecked Sendable {
         XCTAssertEqual(unclear.report.speakers.compactMap(\.name), [])
         // Two remote names for one remote voice: elimination does not guess.
         let crowd = combined(two, local: [(0, 50)], remote: [(62, 90)], roster: ["Bob", "Carol"])
-        XCTAssertEqual(crowd.report.speakers.compactMap(\.name), ["Dragos Badea"])
+        XCTAssertEqual(crowd.report.speakers.compactMap(\.name), [])
         XCTAssertNil(crowd.named)
         // Three voices, two people: elimination does not apply either.
         let split = combined(two + [segment("speaker_2", start: 100, end: 120)], local: [(0, 50)], remote: [(62, 120)], roster: ["Bob"])
         XCTAssertNil(split.named)
     }
 
-    func testEvidenceForSomeoneElseBlocksElimination() {
+    func testWeakEvidenceNeverFallsBackToRosterElimination() {
         let two = [segment(start: 0, end: 60), segment("speaker_1", start: 60, end: 100)]
         // Carol's tile covers 30% of the remote voice at 80%: short of the gate, but
         // it contradicts the roster's only remote name.
         let samples = observations("Carol", from: 62, to: 72) + observations("Bob", from: 72, to: 74.5)
         let blocked = combined(two, local: [(0, 50)], remote: [(60, 100)], roster: ["Bob"], observations: samples)
-        XCTAssertEqual(blocked.report.speakers.compactMap(\.name), ["Dragos Badea"])
+        XCTAssertEqual(blocked.report.speakers.compactMap(\.name), [])
         XCTAssertNil(blocked.named)
-        // Matching evidence below the gate does not block it.
+        // Matching evidence below the gate still cannot establish identity.
         let agreeing = combined(two, local: [(0, 50)], remote: [(60, 100)], roster: ["Bob"], observations: observations("Bob", from: 62, to: 64))
-        XCTAssertEqual(agreeing.report.speakers.compactMap(\.attribution), ["local_microphone_majority", "roster_elimination"])
+        XCTAssertEqual(agreeing.report.speakers.compactMap(\.attribution), [])
+    }
+
+    func testLocalTileCannotNameMultiplePeopleSharingMicrophone() {
+        let voices = [segment(start: 0, end: 20), segment("speaker_1", start: 20, end: 40), segment("speaker_2", start: 40, end: 60)]
+        let local = stride(from: 0.125, to: 40, by: 0.25).map {
+            SpeakerObservation(observed_at: 1000 + $0, meeting_id: "test", names: ["Dragos Badea"], source: "meeting_tile", is_local: true)
+        }
+        let output = combined(voices, local: [(0, 40)], remote: [(40, 60)], roster: ["Bob"],
+                              observations: local + observations("Bob", from: 40, to: 60))
+        XCTAssertEqual(output.report.speakers.map(\.name), [nil, nil, "Bob"])
+        XCTAssertEqual(output.report.speakers.map(\.local_seconds), [20, 20, 0])
+        XCTAssertEqual(output.original.segments.map(\.speaker), ["meeting_1", "meeting_2", "meeting_3"])
+        XCTAssertNil(output.named)
+        let disabled = combined(voices, local: [(0, 40)], remote: [(40, 60)], roster: ["Bob"],
+                                observations: observations("Bob", from: 40, to: 60), inferNames: false)
+        XCTAssertTrue(disabled.report.speakers.allSatisfy { $0.name == nil })
     }
 
     func testDuplicateEvidenceDoesNotOutvoteAConflict() {
@@ -219,13 +235,11 @@ final class ElevenLabsTranscriptsTests: XCTestCase, @unchecked Sendable {
         XCTAssertEqual(output.original.segments.map(\.provider_speaker_id), ["speaker_0", "speaker_0"])
         XCTAssertEqual(Set(output.original.segments.map(\.speaker)).count, 2)
         XCTAssertTrue(output.original.segments.allSatisfy { $0.speaker_name == nil })
-        XCTAssertEqual(output.named?.segments.compactMap(\.speaker_name), ["Local", "Alice"])
-        XCTAssertEqual(output.named?.segments.map(\.speaker), output.original.segments.map(\.speaker))
-        XCTAssertEqual(output.named?.segments.map(\.text), output.original.segments.map(\.text))
-        XCTAssertEqual(output.named?.segments.map(\.end_ms), output.original.segments.map(\.end_ms))
+        XCTAssertNil(output.named, "The local microphone cannot identify its speaker")
+        XCTAssertEqual(output.report.speakers.map(\.name), [nil, "Alice"])
         let dir = try directory()
         try output.write(to: dir)
-        for base in ["transcript", "transcript-named"] {
+        for base in ["transcript"] {
             let text = try String(contentsOf: dir.appendingPathComponent(base + ".md"), encoding: .utf8)
             XCTAssertTrue(text.hasPrefix("# Weekly planning"))
             XCTAssertTrue(text.contains("## Participants"))
@@ -245,7 +259,7 @@ final class ElevenLabsTranscriptsTests: XCTestCase, @unchecked Sendable {
         try AudioTestSupport.write(dir.appendingPathComponent("system.caf"))
         try Data(#"{"files":{"system":"system.caf"},"audio_started_at":1000,"meeting_title":"Planning"}"#.utf8)
             .write(to: dir.appendingPathComponent("meta.json"))
-        let coordinator = TranscriptionCoordinator { _, _ in DiarizedScribeStub() }
+        let coordinator = TranscriptionCoordinator(makeEngine: { _, _ in DiarizedScribeStub() }, completed: { _ in })
         try await coordinator.transcribe(dir, detectSpeakers: true, engineOverride: .elevenLabs)
         let url = dir.appendingPathComponent("transcript.json"), original = try Data(contentsOf: url)
         let transcript = try JSONDecoder().decode(Transcript.self, from: original)

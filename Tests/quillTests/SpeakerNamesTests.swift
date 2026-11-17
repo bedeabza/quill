@@ -17,7 +17,7 @@ final class SpeakerNamesTests: XCTestCase {
 
     /// Recording 2026.11.05-1048 (Teams, three people): two voices have tile
     /// evidence for Bogdan below the gate, one is mostly the microphone.
-    func testDefaultsNeverRepeatANameAndFallBackToTheLastParticipant() {
+    func testDefaultsNeverGuessFromSourceRosterOrWeakEvidence() {
         let rows = SpeakerNames.rows([
             voice("meeting_1", candidate: "Bogdan", agreement: 0.88, observed: 92, local: 6, remote: 102),
             voice("meeting_2", candidate: "Bogdan", agreement: 0.69, observed: 1.9, local: 257, remote: 2,
@@ -25,12 +25,12 @@ final class SpeakerNamesTests: XCTestCase {
             voice("meeting_3", candidate: "Marian", agreement: 0.24, observed: 52, local: 16, remote: 61),
         ], participants: ["Dragos Badea", "Marian", "Bogdan"], localName: "Dragos Badea")
         XCTAssertEqual(rows.map(\.label), ["Speaker 1", "Speaker 2", "Speaker 3"])
-        XCTAssertEqual(rows.map(\.name), ["Bogdan", "Dragos Badea", "Marian"])
-        XCTAssertEqual(rows[1].reason, "Mostly your microphone")
+        XCTAssertEqual(rows.map(\.name), [nil, nil, nil])
+        XCTAssertNil(rows[1].reason)
         let crowded = SpeakerNames.rows([voice("meeting_1", candidate: "Bogdan", agreement: 0.9, observed: 50),
                                          voice("meeting_2", candidate: "Bogdan", agreement: 0.7, observed: 10)],
                                         participants: ["Dragos Badea", "Bogdan", "Marian"], localName: nil)
-        XCTAssertEqual(crowded.map(\.name), ["Bogdan", nil], "two open names left: no guess")
+        XCTAssertEqual(crowded.map(\.name), [nil, nil], "weak evidence must not preselect an identity")
     }
 
     func testApplyWritesAManualNamedCopyAndKeepsTheOriginal() throws {
@@ -80,9 +80,9 @@ final class SpeakerNamesTests: XCTestCase {
         let report = ElevenLabsTranscripts.MappingReport(accepted: false, speakers: [
             voice("meeting_1", candidate: "Bob", agreement: 0.9, observed: 50, local: 0, remote: 0), voice("meeting_2", local: 0, remote: 0)])
         try JSONEncoder().encode(report).write(to: directory.appendingPathComponent("speaker-mapping.json"))
-        XCTAssertEqual(SpeakerNames.state(in: directory)?.rows.map(\.name), ["Bob", "Dragos Badea"])
+        XCTAssertEqual(SpeakerNames.state(in: directory)?.rows.map(\.name), [nil, nil])
         try SpeakerNames.apply(["meeting_2": "Bob"], in: directory)
-        XCTAssertEqual(SpeakerNames.state(in: directory)?.rows.map(\.name), ["Dragos Badea", "Bob"])
+        XCTAssertEqual(SpeakerNames.state(in: directory)?.rows.map(\.name), [nil, "Bob"])
         // The CLI names one voice and keeps the other's name and attribution.
         try SpeakerNames.apply(["meeting_1": "Dragos Badea"], in: directory, keepingOtherNames: true)
         let named = try JSONDecoder().decode(Transcript.self, from: Data(contentsOf: directory.appendingPathComponent("transcript-named.json")))
