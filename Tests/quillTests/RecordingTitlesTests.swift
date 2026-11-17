@@ -76,7 +76,7 @@ final class RecordingTitlesTests: XCTestCase, @unchecked Sendable {
         XCTAssertEqual(now.segments[0].text, changed.segments[0].text)
     }
     func testInvalidAITitleFallsBackAndValidationRejectsUnsafeShapes() async throws {
-        for title in ["Meeting", "# A heading", "Bad\nmultiline title", "https://example.com", String(repeating: "x", count: 100)] {
+        for title in ["Meeting", "# A heading", "Bad\nmultiline title", "https://example.com", String(repeating: "x", count: 201)] {
             XCTAssertNil(RecordingTitles.validTitle(title))
         }
         let dir = try directory()
@@ -84,6 +84,37 @@ final class RecordingTitlesTests: XCTestCase, @unchecked Sendable {
             ("claude", Data(#"{"title":"Meeting","extra":"not allowed"}"#.utf8))
         }
         XCTAssertEqual(fallback?.source, "local")
+    }
+    func testDetailedTitlesKeepContextAndUpgradeLegacyCacheOnce() async throws {
+        let dir = try directory(), requests = TitleRequests()
+        let detailed = "Customer onboarding for the autumn launch: simplifying account setup, resolving feedback and agreeing the rollout priorities"
+        XCTAssertNotNil(RecordingTitles.validTitle(detailed))
+        let complete: RecordingTitles.Complete = { mode, prompt, _, _ in
+            await requests.record(mode)
+            let text = String(decoding: prompt, as: UTF8.self)
+            XCTAssertTrue(text.contains("12–24 words"))
+            XCTAssertTrue(text.contains("Distinguish proposals"))
+            return ("claude", try JSONSerialization.data(withJSONObject: ["title": detailed]))
+        }
+        let first = await RecordingTitles.generate(in: dir, mode: .claude, complete: complete)
+        XCTAssertEqual(first?.title, detailed)
+        var legacy = try XCTUnwrap(first)
+        legacy.generation_version = nil
+        try JSONEncoder().encode(legacy).write(to: dir.appendingPathComponent(RecordingTitles.filename))
+        _ = await RecordingTitles.generate(in: dir, mode: .claude, complete: complete)
+        _ = await RecordingTitles.generate(in: dir, mode: .claude, complete: complete)
+        let count = await requests.count
+        XCTAssertEqual(count, 2, "one upgrade request, then the new cache is reused")
+        XCTAssertEqual(RecordingTitles.saved(in: dir)?.generation_version, RecordingTitles.generationVersion)
+    }
+
+    func testLocalFallbackKeepsAnInformativeContentSentence() {
+        let text = "Hello everyone. We need to simplify customer onboarding before the product launch and resolve account setup failures. Customer onboarding and account setup are the launch priorities."
+        let title = RecordingTitles.localTitle(text: text)
+        XCTAssertTrue(title.lowercased().contains("customer onboarding"))
+        XCTAssertTrue(title.lowercased().contains("account setup"))
+        XCTAssertTrue(title.split(separator: " ").count >= 8)
+        XCTAssertNotNil(RecordingTitles.validTitle(title))
     }
     func testLongMeetingExcerptsCoverBeginningAndEndWithoutExceedingBudget() {
         let text = "BEGIN " + String(repeating: "budget launch feedback ", count: 5000) + " END"

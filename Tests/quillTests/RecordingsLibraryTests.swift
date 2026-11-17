@@ -89,13 +89,13 @@ final class RecordingsLibraryTests: XCTestCase, @unchecked Sendable {
     func testTranscriptShowsReadableNamesAndTimesAndSeparatesNamedVariant() throws {
         let directory = try recording(in: root())
         XCTAssertEqual(try RecordingsLibrary.transcript(in: directory, named: false),
-                       .turns([TranscriptTurn(id: 0, start: 1, speaker: "Speaker 1", text: "Previous words.")]))
+                       .turns([TranscriptTurn(id: 0, start: 1, speaker: "Speaker 1", text: "Previous words.", speakerID: "system_1")]))
         XCTAssertEqual(try RecordingsLibrary.transcript(in: directory, named: true), .empty("No verified named transcript is available."))
         try Transcript(engine: "elevenlabs", model: "scribe_v2", created_at: "fixture", segments: [
             .init(speaker: "system_1", start_ms: 1000, end_ms: 2000, text: "Previous words.", speaker_name: "Alice")])
             .write(to: directory, basename: "transcript-named")
         XCTAssertEqual(try RecordingsLibrary.transcript(in: directory, named: true),
-                       .turns([TranscriptTurn(id: 0, start: 1, speaker: "Alice", text: "Previous words.")]))
+                       .turns([TranscriptTurn(id: 0, start: 1, speaker: "Alice", text: "Previous words.", speakerID: "system_1")]))
         XCTAssertTrue(try RecordingsLibrary.entries(in: directory.deletingLastPathComponent())[0].hasNamedTranscript)
     }
 
@@ -141,11 +141,23 @@ final class RecordingsLibraryTests: XCTestCase, @unchecked Sendable {
         """#
         try Data(fixture.utf8).write(to: directory.appendingPathComponent("transcript.json"))
         XCTAssertEqual(try RecordingsLibrary.transcript(in: directory, named: false), .turns([
-            TranscriptTurn(id: 0, start: 1, speaker: "Alice", text: "Hello. Shall we start?"),
-            TranscriptTurn(id: 1, start: 65, speaker: "Bob", text: "Yes."),
-            TranscriptTurn(id: 2, start: 3725, speaker: "Speaker 2", text: "Me too."),
-            TranscriptTurn(id: 3, start: 3727, speaker: "Alice", text: "Great."),
+            TranscriptTurn(id: 0, start: 1, speaker: "Alice", text: "Hello. Shall we start?", speakerID: "system_1"),
+            TranscriptTurn(id: 1, start: 65, speaker: "Bob", text: "Yes.", speakerID: "me"),
+            TranscriptTurn(id: 2, start: 3725, speaker: "Speaker 2", text: "Me too.", speakerID: "system_2"),
+            TranscriptTurn(id: 3, start: 3727, speaker: "Alice", text: "Great.", speakerID: "system_1"),
         ]))
+    }
+
+    func testDistinctVoicesWithTheSameNameStaySeparateForNavigation() throws {
+        let directory = try recording(in: root())
+        try Transcript(engine: "elevenlabs", model: "scribe_v2", created_at: "fixture", segments: [
+            .init(speaker: "meeting_1", start_ms: 0, end_ms: 1000, text: "First voice.", speaker_name: "Alex"),
+            .init(speaker: "meeting_2", start_ms: 1000, end_ms: 2000, text: "Second voice.", speaker_name: "Alex"),
+        ]).write(to: directory)
+        guard case .turns(let turns) = try RecordingsLibrary.transcript(in: directory, named: false) else { return XCTFail("Missing turns") }
+        XCTAssertEqual(turns.map(\.speakerID), ["meeting_1", "meeting_2"])
+        XCTAssertEqual(turns.map(\.speaker), ["Alex", "Alex"])
+        XCTAssertEqual(turns.map(\.text), ["First voice.", "Second voice."])
     }
 
     func testTranscriptFallsBackToMarkdownThenToEmpty() throws {
@@ -199,7 +211,7 @@ final class RecordingsLibraryTests: XCTestCase, @unchecked Sendable {
         let replacement = try RecordingRegeneration(directory: directory, freshCloud: false)
         defer { replacement.unlock() }
         let engine = LibraryTranscriptionStub()
-        let coordinator = TranscriptionCoordinator { _, _ in engine }
+        let coordinator = TranscriptionCoordinator(makeEngine: { _, _ in engine }, completed: { _ in })
         do { try await coordinator.transcribe(directory, engineOverride: .elevenLabs); XCTFail("CLI must respect the same lock") }
         catch { XCTAssertTrue(String(describing: error).contains("already being processed")) }
         let calls = await engine.calls
@@ -210,7 +222,7 @@ final class RecordingsLibraryTests: XCTestCase, @unchecked Sendable {
         let directory = try recording(in: root())
         let previous = try Data(contentsOf: directory.appendingPathComponent("transcript.json"))
         let engine = LibraryTranscriptionStub(pause: 100_000_000)
-        let coordinator = TranscriptionCoordinator { _, _ in engine }
+        let coordinator = TranscriptionCoordinator(makeEngine: { _, _ in engine }, completed: { _ in })
         try await coordinator.regenerate(directory, engine: .elevenLabs)
         do { try await coordinator.regenerate(directory, engine: .elevenLabs); XCTFail("Duplicate must be rejected") }
         catch { XCTAssertTrue(String(describing: error).contains("already")) }
@@ -227,7 +239,7 @@ final class RecordingsLibraryTests: XCTestCase, @unchecked Sendable {
     func testFailedRegenerationPreservesOriginalAndExposesFailure() async throws {
         let directory = try recording(in: root())
         let previous = try Data(contentsOf: directory.appendingPathComponent("transcript.json"))
-        let coordinator = TranscriptionCoordinator { _, _ in LibraryTranscriptionStub(fails: true) }
+        let coordinator = TranscriptionCoordinator(makeEngine: { _, _ in LibraryTranscriptionStub(fails: true) }, completed: { _ in })
         try await coordinator.regenerate(directory, engine: .elevenLabs)
         try await waitForJob(directory, coordinator: coordinator)
         XCTAssertEqual(try Data(contentsOf: directory.appendingPathComponent("transcript.json")), previous)
@@ -240,7 +252,7 @@ final class RecordingsLibraryTests: XCTestCase, @unchecked Sendable {
         let cache = directory.appendingPathComponent(MeetingAudio.cacheName)
         try Data("saved response".utf8).write(to: cache)
         let engine = LibraryTranscriptionStub()
-        let coordinator = TranscriptionCoordinator { _, _ in engine }
+        let coordinator = TranscriptionCoordinator(makeEngine: { _, _ in engine }, completed: { _ in })
         try await coordinator.regenerate(directory, engine: .elevenLabs)
         try await waitForJob(directory, coordinator: coordinator)
         try await coordinator.regenerate(directory, engine: .elevenLabs, freshCloud: true)
@@ -254,7 +266,8 @@ final class RecordingsLibraryTests: XCTestCase, @unchecked Sendable {
         let before = Config.transcriptionEngine()
         let local = LibraryTranscriptionStub(.parakeet)
         let cloud = LibraryTranscriptionStub(.elevenLabs)
-        let coordinator = TranscriptionCoordinator { kind, _ in kind == .parakeet ? local : cloud }
+        let coordinator = TranscriptionCoordinator(makeEngine: { kind, _ in kind == .parakeet ? local : cloud }, completed: { _ in },
+            analyzeSpeakers: { _, _, _, _ in .init(turns: [], names: [:]) })
         for kind in [TranscriptionEngineKind.parakeet, .elevenLabs] {
             try await coordinator.regenerate(directory, engine: kind)
             try await waitForJob(directory, coordinator: coordinator)
@@ -308,7 +321,7 @@ final class RecordingsLibraryTests: XCTestCase, @unchecked Sendable {
         let recording = try recording(in: root, name: "2026.11.02-1200", started: "2026-11-02T10:00:00Z")
         let (trashFolder, trash) = try trash(in: root)
         let engine = LibraryTranscriptionStub(pause: 1_000_000_000)
-        let coordinator = TranscriptionCoordinator(makeEngine: { _, _ in engine }, trash: trash)
+        let coordinator = TranscriptionCoordinator(makeEngine: { _, _ in engine }, trash: trash, completed: { _ in })
         try await coordinator.regenerate(processing, engine: .elevenLabs)
         try await coordinator.regenerate(queued, engine: .elevenLabs)
         for _ in 0..<200 where await coordinator.activity()[processing] != .processing { try await Task.sleep(nanoseconds: 5_000_000) }
@@ -363,7 +376,7 @@ final class RecordingsLibraryTests: XCTestCase, @unchecked Sendable {
         let meta: [String: Any] = ["files": ["mic": "mic.caf", "system": "system.caf"]]
         try JSONSerialization.data(withJSONObject: meta).write(to: directory.appendingPathComponent("meta.json"))
         let previous = try Data(contentsOf: directory.appendingPathComponent("transcript.json"))
-        let coordinator = TranscriptionCoordinator { _, _ in LibraryTranscriptionStub(.parakeet, failOnSystem: true) }
+        let coordinator = TranscriptionCoordinator(makeEngine: { _, _ in LibraryTranscriptionStub(.parakeet, failOnSystem: true) }, completed: { _ in })
         try await coordinator.regenerate(directory, engine: .parakeet)
         try await waitForJob(directory, coordinator: coordinator)
         XCTAssertEqual(try Data(contentsOf: directory.appendingPathComponent("transcript.json")), previous)

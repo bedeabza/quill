@@ -79,10 +79,7 @@ final class RecordingSession {
         try FileManager.default.createDirectory(at: candidate, withIntermediateDirectories: true)
         dir = candidate
         roster = ParticipantRoster(audio_started_at: startedAt.timeIntervalSince1970)
-        if let name = localSpeakerName, !sharedMicrophone {
-            roster?.observe(SpeakerObservation(observed_at: startedAt.timeIntervalSince1970, meeting_id: "local", names: [name],
-                                               source: "local_microphone", is_local: true), localName: name)
-        }
+
         if let roster { try JSONEncoder().encode(roster).write(to: dir.appendingPathComponent("participants.json"), options: .atomic) }
     }
 

@@ -242,6 +242,7 @@ final class AppController: NSObject, NSApplicationDelegate {
                 }
             }
             await transcription.resumePending(root: root)
+            await S3UploadCoordinator.shared.resumePending(root: root)
         }
     }
 
