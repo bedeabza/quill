@@ -12,7 +12,8 @@ Validated November 25, 2026.
 - The turn being spoken has a subtle accent background, an accent timestamp and
   a speaker symbol. Of the turns covering the playback time, the one that
   started last is highlighted (an interjection over a longer turn); in a pause
-  between turns the last turn stays highlighted; before the first turn none is.
+  between turns the turn that ended last stays highlighted; before the first
+  turn none is.
   Turns use the segment times from `transcript.json` (or the named copy):
   consecutive segments of one speaker merge into a turn from the first start to
   the last end.

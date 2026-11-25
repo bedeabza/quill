@@ -347,15 +347,6 @@ private struct RecordingDetail: View {
         // Each recording opens at the top; refreshes of the same one keep the position.
         .id(entry.directory)
         .onScrollPhaseChange { _, phase in if phase == .interacting { following = false } }
-        // Space plays and pauses once a turn was played, without taking it from text fields.
-        .focusable()
-        .focusEffectDisabled()
-        .focused($transcriptFocused)
-        .onKeyPress(.space) {
-            guard model.player.directory == entry.directory else { return .ignored }
-            model.player.toggle()
-            return .handled
-        }
     }
 
     private func play(_ turn: TranscriptTurn) {
@@ -480,12 +471,21 @@ private struct RecordingDetail: View {
                         TurnView(turn: turn, color: colors[turn.speaker] ?? .primary, isActive: turn.id == active,
                                  play: playable ? { play(turn) } : nil)
                             .id(turn.id)
-                            .onScrollVisibilityChange(threshold: 0.8) { visible in
+                            .onScrollVisibilityChange(threshold: 0.5) { visible in
                                 if visible { visibleTurns.insert(turn.id) } else { visibleTurns.remove(turn.id) }
                             }
                     }
                 }
                 .textSelection(.enabled)
+                // Space plays and pauses once a turn was played. Only the turns take
+                // focus, so the search field and the speaker pickers keep Space.
+                .focusable()
+                .focusEffectDisabled()
+                .focused($transcriptFocused)
+                .onKeyPress(.space) {
+                    guard model.player.directory == entry.directory, model.player.toggle() else { return .ignored }
+                    return .handled
+                }
             case .text(let text):
                 LazyVStack(alignment: .leading, spacing: 12) {
                     ForEach(Array(text.components(separatedBy: "\n\n").enumerated()), id: \.offset) { paragraph in

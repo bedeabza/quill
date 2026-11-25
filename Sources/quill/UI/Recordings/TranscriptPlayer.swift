@@ -52,12 +52,14 @@ final class TranscriptPlayer {
         }
     }
 
-    func toggle() {
-        guard let player else { return }
-        if isPlaying { player.pause(); isPlaying = false; return }
+    /// Returns false while nothing is loaded (still loading, or it failed).
+    @discardableResult func toggle() -> Bool {
+        guard let player else { return false }
+        if isPlaying { player.pause(); isPlaying = false; return true }
         if time >= duration - 0.05 { seek(player, to: 0) }
         player.play()
         isPlaying = true
+        return true
     }
 
     /// Scrubbing: moves without changing play or pause.

@@ -22,7 +22,7 @@ pids=$(running)
 if [ -n "$pids" ]; then
     # A recording keeps its mic.caf and system.caf open for writing; quitting
     # would end it. Transcript playback only reads them (FD mode r).
-    if lsof -p "$(echo $pids | tr ' ' ,)" 2>/dev/null | awk '$4 ~ /[0-9][wu]$/ && /\.caf$/ { found = 1 } END { exit !found }'; then
+    if lsof -p "$(echo $pids | tr ' ' ,)" 2>/dev/null | awk '$4 ~ /^[0-9]+[uw]/ && /\.caf$/ { found = 1 } END { exit !found }'; then
         echo "error: Quill is recording; not quitting it. Deploy again when the recording has stopped." >&2
         exit 1
     fi

@@ -24,6 +24,7 @@ final class TranscriptPlaybackTests: XCTestCase {
         XCTAssertEqual(active(6), 1)
         XCTAssertEqual(active(7.5), 2, "the interjection wins while it lasts")
         XCTAssertEqual(active(9), 1, "then the longer turn again")
+        XCTAssertEqual(active(12.5), 1, "a pause keeps the turn that ended last, not an earlier interjection")
         XCTAssertEqual(active(17), 3)
         XCTAssertEqual(active(30), 4, "after the end, the last turn")
         XCTAssertNil(TranscriptPlayback.activeTurn([], at: 3))

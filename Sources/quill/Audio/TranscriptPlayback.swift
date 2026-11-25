@@ -53,12 +53,15 @@ enum TranscriptPlayback {
 
     /// The turn being spoken at `time`: of the turns that cover it, the one
     /// that started last (an interjection over a longer turn); in a pause, the
-    /// turn that started last before it; before the first turn, none.
+    /// turn that ended last before it; before the first turn, none.
     static func activeTurn(_ turns: [TranscriptTurn], at time: Double) -> Int? {
         var covering: TranscriptTurn?, previous: TranscriptTurn?
         for turn in turns where turn.start <= time {
-            if previous.map({ turn.start >= $0.start }) ?? true { previous = turn }
-            if time < turn.end, covering.map({ turn.start >= $0.start }) ?? true { covering = turn }
+            if time < turn.end {
+                if covering.map({ turn.start >= $0.start }) ?? true { covering = turn }
+            } else if previous.map({ turn.end > $0.end || (turn.end == $0.end && turn.start >= $0.start) }) ?? true {
+                previous = turn
+            }
         }
         return (covering ?? previous)?.id
     }
