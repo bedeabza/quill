@@ -97,7 +97,8 @@ final class TranscriptPlayer {
             MainActor.assumeIsolated {
                 guard let self, self.player === player else { return }
                 self.time = time.seconds
-                self.isPlaying = player.rate != 0
+                // Observation notifies on every set; only a change redraws.
+                if self.isPlaying != (player.rate != 0) { self.isPlaying = player.rate != 0 }
             }
         }
         endObserver = NotificationCenter.default.addObserver(forName: AVPlayerItem.didPlayToEndTimeNotification, object: item, queue: .main) { [weak self] _ in
