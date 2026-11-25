@@ -89,13 +89,13 @@ final class RecordingsLibraryTests: XCTestCase, @unchecked Sendable {
     func testTranscriptShowsReadableNamesAndTimesAndSeparatesNamedVariant() throws {
         let directory = try recording(in: root())
         XCTAssertEqual(try RecordingsLibrary.transcript(in: directory, named: false),
-                       .turns([TranscriptTurn(id: 0, start: 1, speaker: "Speaker 1", text: "Previous words.")]))
+                       .turns([TranscriptTurn(id: 0, start: 1, end: 2, speaker: "Speaker 1", text: "Previous words.")]))
         XCTAssertEqual(try RecordingsLibrary.transcript(in: directory, named: true), .empty("No verified named transcript is available."))
         try Transcript(engine: "elevenlabs", model: "scribe_v2", created_at: "fixture", segments: [
             .init(speaker: "system_1", start_ms: 1000, end_ms: 2000, text: "Previous words.", speaker_name: "Alice")])
             .write(to: directory, basename: "transcript-named")
         XCTAssertEqual(try RecordingsLibrary.transcript(in: directory, named: true),
-                       .turns([TranscriptTurn(id: 0, start: 1, speaker: "Alice", text: "Previous words.")]))
+                       .turns([TranscriptTurn(id: 0, start: 1, end: 2, speaker: "Alice", text: "Previous words.")]))
         XCTAssertTrue(try RecordingsLibrary.entries(in: directory.deletingLastPathComponent())[0].hasNamedTranscript)
     }
 
@@ -141,10 +141,10 @@ final class RecordingsLibraryTests: XCTestCase, @unchecked Sendable {
         """#
         try Data(fixture.utf8).write(to: directory.appendingPathComponent("transcript.json"))
         XCTAssertEqual(try RecordingsLibrary.transcript(in: directory, named: false), .turns([
-            TranscriptTurn(id: 0, start: 1, speaker: "Alice", text: "Hello. Shall we start?"),
-            TranscriptTurn(id: 1, start: 65, speaker: "Bob", text: "Yes."),
-            TranscriptTurn(id: 2, start: 3725, speaker: "Speaker 2", text: "Me too."),
-            TranscriptTurn(id: 3, start: 3727, speaker: "Alice", text: "Great."),
+            TranscriptTurn(id: 0, start: 1.5, end: 4, speaker: "Alice", text: "Hello. Shall we start?"),
+            TranscriptTurn(id: 1, start: 65, end: 66, speaker: "Bob", text: "Yes."),
+            TranscriptTurn(id: 2, start: 3725, end: 3726, speaker: "Speaker 2", text: "Me too."),
+            TranscriptTurn(id: 3, start: 3727, end: 3728, speaker: "Alice", text: "Great."),
         ]))
     }
 

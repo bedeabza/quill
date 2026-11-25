@@ -146,7 +146,27 @@ pre-selected twice. **Apply Names** writes `transcript-named.json` and
 `transcript-named.md` with `manual` attribution, keeps a replaced named copy
 under `speaker-label-backup-<id>/`, and never edits `transcript.json`.
 **Name Speakers…** in the actions menu reopens the block for a complete named
-copy. **Show in Finder** in the toolbar opens the recording
+copy.
+
+To listen to a passage, hover a turn and click its timestamp (a play symbol
+appears beside it). Playback starts at that turn's start and continues through
+the following turns until you pause it or the recording ends. The turn being
+spoken is highlighted and the transcript scrolls to keep it in view; scrolling
+by hand stops the following until you play a turn again or click **Show
+Current** (the list symbol) in the player. The player under the transcript has
+play/pause, the current time, a scrubber, the duration and a close button;
+Space plays and pauses after you played a turn. Selecting another recording,
+leaving Recordings or closing the window stops playback. Quill plays
+`meeting-audio.wav` when the recording has one (the aligned mix sent to
+ElevenLabs); otherwise it plays `mic.caf` and `system.caf` together, each
+shifted by its `start_offset_ms` from `meta.json`, the same shift transcript
+timestamps use. Without either, the transcript says **No audio to play** and its
+tooltip says why. Playback only reads the audio; it never writes to the
+recording folder, transcribes or uploads anything. Without headphones the
+microphone also picks up the call, so the separate tracks may carry an echo of
+it; `meeting-audio.wav` has that echo reduced.
+
+**Show in Finder** in the toolbar opens the recording
 folder. The folder menu in the footer browses another recordings folder and
 returns to the default one.
 

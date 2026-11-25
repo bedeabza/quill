@@ -17,8 +17,10 @@ struct RecordingEntry: Sendable {
 
 struct TranscriptTurn: Identifiable, Equatable, Sendable {
     let id: Int
-    /// Seconds from the start of the recording.
-    let start: Int
+    /// Seconds on the meeting clock, from its first segment's start to its
+    /// last segment's end.
+    let start: Double
+    let end: Double
     let speaker: String
     let text: String
 }
@@ -111,10 +113,12 @@ enum RecordingsLibrary {
             var turns: [TranscriptTurn] = []
             for segment in transcript.segments {
                 let speaker = segment.displayName
+                let start = max(0, Double(segment.start_ms) / 1000), end = max(start, Double(segment.end_ms) / 1000)
                 if let last = turns.last, last.speaker == speaker {
-                    turns[turns.count - 1] = TranscriptTurn(id: last.id, start: last.start, speaker: speaker, text: last.text + " " + segment.text)
+                    turns[turns.count - 1] = TranscriptTurn(id: last.id, start: last.start, end: max(last.end, end),
+                                                            speaker: speaker, text: last.text + " " + segment.text)
                 } else {
-                    turns.append(TranscriptTurn(id: turns.count, start: max(0, segment.start_ms / 1000), speaker: speaker, text: segment.text))
+                    turns.append(TranscriptTurn(id: turns.count, start: start, end: end, speaker: speaker, text: segment.text))
                 }
             }
             return .turns(turns)

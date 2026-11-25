@@ -296,8 +296,32 @@ private struct RecordingDetail: View {
     @Bindable var model: RecordingsModel
     let entry: RecordingEntry
     let regenerate: (RecordingEntry) -> Void
+    /// Scroll to the spoken turn when it moves out of view; off once the user
+    /// scrolls, on again when they play a turn or choose Show Current.
+    @State private var following = true
+    @State private var visibleTurns: Set<Int> = []
+    @FocusState private var transcriptFocused: Bool
 
     var body: some View {
+        ScrollViewReader { proxy in
+            scroll
+                .onChange(of: model.player.activeTurn) { _, turn in
+                    guard following, let turn, !visibleTurns.contains(turn) else { return }
+                    withAnimation { proxy.scrollTo(turn, anchor: UnitPoint(x: 0.5, y: 0.2)) }
+                }
+                .safeAreaInset(edge: .bottom, spacing: 0) {
+                    if model.player.directory == entry.directory {
+                        PlayerBar(player: model.player, following: following) {
+                            following = true
+                            if let turn = model.player.activeTurn { withAnimation { proxy.scrollTo(turn, anchor: UnitPoint(x: 0.5, y: 0.2)) } }
+                        }
+                    }
+                }
+        }
+        .onChange(of: entry.directory) { visibleTurns = []; following = true }
+    }
+
+    private var scroll: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
                 header
@@ -322,6 +346,22 @@ private struct RecordingDetail: View {
         }
         // Each recording opens at the top; refreshes of the same one keep the position.
         .id(entry.directory)
+        .onScrollPhaseChange { _, phase in if phase == .interacting { following = false } }
+        // Space plays and pauses once a turn was played, without taking it from text fields.
+        .focusable()
+        .focusEffectDisabled()
+        .focused($transcriptFocused)
+        .onKeyPress(.space) {
+            guard model.player.directory == entry.directory else { return .ignored }
+            model.player.toggle()
+            return .handled
+        }
+    }
+
+    private func play(_ turn: TranscriptTurn) {
+        following = true
+        transcriptFocused = true
+        model.play(from: turn)
     }
 
     private var status: RecordingStatus { model.status(of: entry) }
@@ -410,9 +450,18 @@ private struct RecordingDetail: View {
     }
 
     private var transcriptBar: some View {
-        Text("Transcript")
-            .font(.headline)
-            .frame(minHeight: 24)
+        HStack(alignment: .firstTextBaseline) {
+            Text("Transcript")
+                .font(.headline)
+            Spacer(minLength: 8)
+            if case .unavailable(let reason) = model.playback, case .turns = model.transcript {
+                Label("No audio to play", systemImage: "speaker.slash")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .help(reason)
+            }
+        }
+        .frame(minHeight: 24)
     }
 
     @ViewBuilder private var transcript: some View {
@@ -423,10 +472,17 @@ private struct RecordingDetail: View {
             switch model.transcript {
             case .turns(let turns):
                 let colors = RecordingFormat.colors(turns)
+                let playable = if case .tracks = model.playback { true } else { false }
+                let active = model.player.directory == entry.directory ? model.player.activeTurn : nil
                 // Lazy, so meetings of several hours scroll smoothly.
                 LazyVStack(alignment: .leading, spacing: 16) {
                     ForEach(turns) { turn in
-                        TurnView(turn: turn, color: colors[turn.speaker] ?? .primary)
+                        TurnView(turn: turn, color: colors[turn.speaker] ?? .primary, isActive: turn.id == active,
+                                 play: playable ? { play(turn) } : nil)
+                            .id(turn.id)
+                            .onScrollVisibilityChange(threshold: 0.8) { visible in
+                                if visible { visibleTurns.insert(turn.id) } else { visibleTurns.remove(turn.id) }
+                            }
                     }
                 }
                 .textSelection(.enabled)
@@ -546,13 +602,15 @@ private struct SpeakerNamesForm: View {
 private struct TurnView: View {
     let turn: TranscriptTurn
     let color: Color
+    /// Being spoken: highlighted while the player is open.
+    let isActive: Bool
+    /// nil when the recording has no audio to play.
+    let play: (() -> Void)?
+    @State private var hovering = false
 
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 14) {
-            Text(RecordingFormat.clock(turn.start))
-                .font(.callout)
-                .monospacedDigit()
-                .foregroundStyle(.tertiary)
+            timestamp
                 .frame(width: 62, alignment: .leading)
             VStack(alignment: .leading, spacing: 3) {
                 Text(turn.speaker)
@@ -563,7 +621,90 @@ private struct TurnView: View {
                     .lineSpacing(3)
                     .fixedSize(horizontal: false, vertical: true)
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
+        // The highlight takes in the gutter and is drawn outside the layout, so nothing moves.
+        .padding(EdgeInsets(top: 6, leading: 22, bottom: 6, trailing: 10))
+        .background(isActive ? Color.accentColor.opacity(0.1) : .clear, in: .rect(cornerRadius: 7))
+        .padding(EdgeInsets(top: -6, leading: -22, bottom: -6, trailing: -10))
+        .onHover { hovering = $0 }
+    }
+
+    /// With audio, the timestamp and a play symbol in the gutter before it
+    /// form one button; the symbol shows on hover and on the spoken turn.
+    @ViewBuilder private var timestamp: some View {
+        let clock = Text(RecordingFormat.clock(Int(turn.start)))
+            .font(.callout)
+            .monospacedDigit()
+        if let play {
+            Button(action: play) {
+                HStack(alignment: .firstTextBaseline, spacing: 4) {
+                    Image(systemName: hovering || !isActive ? "play.fill" : "speaker.wave.2.fill")
+                        .font(.system(size: 9))
+                        .frame(width: 14)
+                        .foregroundStyle(.tint)
+                        .opacity(hovering || isActive ? 1 : 0)
+                    clock.foregroundStyle(hovering || isActive ? AnyShapeStyle(.tint) : AnyShapeStyle(.tertiary))
+                }
+                .contentShape(.rect)
+            }
+            .buttonStyle(.plain)
+            // The gutter hangs into the margin, so timestamps stay aligned with the header.
+            .padding(.leading, -18)
+            .help("Play from \(RecordingFormat.clock(Int(turn.start)))")
+        } else {
+            clock.foregroundStyle(.tertiary)
+        }
+    }
+}
+
+/// Playback controls under the transcript while a recording plays or is paused.
+private struct PlayerBar: View {
+    let player: TranscriptPlayer
+    let following: Bool
+    let showCurrent: () -> Void
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Divider()
+            HStack(spacing: 10) {
+                Button(player.isPlaying ? "Pause" : "Play", systemImage: player.isPlaying ? "pause.fill" : "play.fill") {
+                    player.toggle()
+                }
+                .labelStyle(.iconOnly)
+                .frame(width: 16)
+                .help(player.isPlaying ? "Pause (Space)" : "Play (Space)")
+                if let error = player.error {
+                    Label(error, systemImage: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.red)
+                        .lineLimit(1)
+                    Spacer(minLength: 0)
+                } else {
+                    Text(RecordingFormat.clock(Int(player.time)))
+                        .foregroundStyle(.secondary)
+                    Slider(value: Binding(get: { player.time }, set: { player.seek(to: $0) }), in: 0...max(player.duration, 1))
+                        .controlSize(.mini)
+                        .disabled(player.duration == 0)
+                    Text(RecordingFormat.clock(Int(player.duration)))
+                        .foregroundStyle(.secondary)
+                }
+                if !following {
+                    Button("Show Current", systemImage: "text.line.first.and.arrowtriangle.forward", action: showCurrent)
+                        .labelStyle(.iconOnly)
+                        .help("Scroll to the turn being spoken and keep following it")
+                }
+                Button("Close Player", systemImage: "xmark") { player.stop() }
+                    .labelStyle(.iconOnly)
+                    .help("Stop playback")
+            }
+            .buttonStyle(.borderless)
+            .font(.callout)
+            .monospacedDigit()
+            .controlSize(.small)
+            .padding(.horizontal, 14)
+            .frame(height: 30)
+        }
+        .background(.bar)
     }
 }
 

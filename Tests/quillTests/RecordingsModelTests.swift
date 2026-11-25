@@ -85,9 +85,9 @@ final class RecordingsModelTests: XCTestCase {
         XCTAssertEqual(RecordingFormat.people([]), "No participants")
         XCTAssertEqual(RecordingFormat.people(["Dragos", "Emil Ilie", "Ioana Pop", "Radu Marin", "Maria Dinu"]), "Dragos, Emil, Ioana +2")
         XCTAssertEqual(RecordingFormat.clock(3725), "01:02:05")
-        let colors = RecordingFormat.colors([TranscriptTurn(id: 0, start: 0, speaker: "Emil", text: ""),
-                                             TranscriptTurn(id: 1, start: 1, speaker: "Ioana", text: ""),
-                                             TranscriptTurn(id: 2, start: 2, speaker: "Emil", text: "")])
+        let colors = RecordingFormat.colors([TranscriptTurn(id: 0, start: 0, end: 1, speaker: "Emil", text: ""),
+                                             TranscriptTurn(id: 1, start: 1, end: 2, speaker: "Ioana", text: ""),
+                                             TranscriptTurn(id: 2, start: 2, end: 3, speaker: "Emil", text: "")])
         XCTAssertEqual(colors, ["Emil": .blue, "Ioana": .orange])
     }
 }
