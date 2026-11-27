@@ -14,6 +14,20 @@ import Foundation
 /// directory as its argument — after the transcript is written, or right
 /// after recording when transcription is disabled.
 enum Config {
+    static func s3(at url: URL = path) -> S3Configuration {
+        guard let data = try? Data(contentsOf: url),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let value = json["s3"], let encoded = try? JSONSerialization.data(withJSONObject: value),
+              let config = try? JSONDecoder().decode(S3Configuration.self, from: encoded) else { return S3Configuration() }
+        return config
+    }
+
+    static func setS3(_ config: S3Configuration, at url: URL = path) throws {
+        let data = try JSONEncoder().encode(config)
+        let value = try JSONSerialization.jsonObject(with: data)
+        try update(at: url) { $0["s3"] = value }
+    }
+
     /// Cloud titles require a separate opt-in; transcript cleanup can stay off.
     static func recordingTitleMode() -> PostProcessingMode {
         let options = load()?["recording_titles"] as? [String: Any]
