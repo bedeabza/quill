@@ -1,8 +1,8 @@
 import Darwin
 import Foundation
 
-/// Names chosen by the user for a Scribe recording's voices and the most likely
-/// defaults offered for them. The original transcript is never edited: names go
+/// Names chosen by the user for a Scribe recording's voices and defaults backed
+/// by accepted evidence. The original transcript is never edited: names go
 /// into the separate named copy, with `manual` attribution.
 enum SpeakerNames {
     struct Row: Hashable, Sendable {
@@ -33,48 +33,24 @@ enum SpeakerNames {
     private static func reason(_ attribution: String?, _ voice: ElevenLabsTranscripts.SpeakerEvidenceReport?) -> String {
         switch attribution {
         case "manual": return "Chosen by you"
-        case "local_microphone_majority": return "Mostly your microphone"
-        case "roster_elimination": return "Only participant left"
         case "meeting_timeline": return voice.map { "Speaking tile, \(percent($0.agreement)) agreement" } ?? "Speaking tile"
         default: return "Named copy"
         }
     }
 
-    /// Defaults: the names the named copy already gives (`fixed`, speaker ID to
-    /// name and attribution), names assigned in the report, then the strongest
-    /// remaining tile evidence, the microphone majority, and the last participant
-    /// left. No name is pre-selected twice.
+    /// Only confirmed names or evidence that passed the gate are preselected.
+    /// Similar names, source windows and roster counts never establish identity.
     static func rows(_ speakers: [ElevenLabsTranscripts.SpeakerEvidenceReport], fixed: [String: (name: String, attribution: String?)] = [:],
                      participants: [String], localName: String?) -> [Row] {
-        let voices = speakers.filter { $0.provider_speaker_id != nil }
-        var chosen: [String: (name: String, reason: String)] = [:]
-        func used(_ name: String) -> Bool { chosen.values.contains { $0.name.caseInsensitiveCompare(name) == .orderedSame } }
-        for voice in voices {
-            if let current = fixed[voice.speaker] { chosen[voice.speaker] = (current.name, reason(current.attribution, voice)) }
-        }
-        for voice in voices where chosen[voice.speaker] == nil {
-            guard let name = voice.name, !used(name) else { continue }
-            chosen[voice.speaker] = (name, reason(voice.attribution ?? "meeting_timeline", voice))
-        }
-        for voice in voices.sorted(by: { $0.agreement * $0.observed_seconds > $1.agreement * $1.observed_seconds })
-        where chosen[voice.speaker] == nil {
-            guard let name = voice.candidate_name, voice.observed_seconds > 0, !used(name) else { continue }
-            chosen[voice.speaker] = (name, reason("meeting_timeline", voice))
-        }
-        if let localName, !used(localName) {
-            func share(_ voice: ElevenLabsTranscripts.SpeakerEvidenceReport) -> Double {
-                let local = voice.local_seconds ?? 0, total = local + (voice.remote_seconds ?? 0)
-                return total > 0 ? local / total : 0
+        speakers.filter { $0.provider_speaker_id != nil }.map { voice in
+            if let current = fixed[voice.speaker], !SpeakerIdentities.inferredAttributions.contains(current.attribution ?? "") {
+                return Row(speaker: voice.speaker, label: label(voice.speaker), name: current.name,
+                           reason: reason(current.attribution, voice))
             }
-            if let voice = voices.filter({ chosen[$0.speaker] == nil && share($0) > 0.5 }).max(by: { share($0) < share($1) }) {
-                chosen[voice.speaker] = (localName, "Mostly your microphone")
-            }
-        }
-        let open = voices.filter { chosen[$0.speaker] == nil }
-        let left = participants.filter { !used($0) }
-        if open.count == 1, left.count == 1 { chosen[open[0].speaker] = (left[0], "Only participant left") }
-        return voices.map { voice in
-            Row(speaker: voice.speaker, label: label(voice.speaker), name: chosen[voice.speaker]?.name, reason: chosen[voice.speaker]?.reason)
+            let trusted = voice.accepted && !SpeakerIdentities.inferredAttributions.contains(voice.attribution ?? "")
+            return Row(speaker: voice.speaker, label: label(voice.speaker),
+                       name: trusted ? voice.name ?? voice.candidate_name : nil,
+                       reason: trusted ? reason("meeting_timeline", voice) : nil)
         }
     }
 
@@ -103,23 +79,6 @@ enum SpeakerNames {
         for index in speakers.indices where speakers[index].accepted && speakers[index].name == nil {
             speakers[index].name = speakers[index].candidate_name
             speakers[index].attribution = "meeting_timeline"
-        }
-        // Reports written before the inference existed: derive the source
-        // seconds from the saved turns and windows, for defaults only.
-        if speakers.contains(where: { $0.local_seconds == nil }),
-           let analysis = (try? Data(contentsOf: directory.appendingPathComponent("speaker-analysis.json")))
-               .flatMap({ try? decoder.decode(SpeakerAnalysis.self, from: $0) }),
-           let manifest = (try? Data(contentsOf: directory.appendingPathComponent(MeetingAudio.manifestName)))
-               .flatMap({ try? decoder.decode(MeetingAudio.Manifest.self, from: $0) }) {
-            for index in speakers.indices {
-                let seconds = ElevenLabsTranscripts.sourceSeconds(analysis.turns.filter { $0.speaker_id == speakers[index].speaker }, manifest)
-                speakers[index].local_seconds = seconds.local
-                speakers[index].remote_seconds = seconds.remote
-            }
-            if let roster = original.participant_roster ?? meta?.participantRoster {
-                ElevenLabsTranscripts.infer(&speakers, roster: roster, localName: meta?.localSpeakerName,
-                                            sharedMicrophone: meta?.sharedMicrophone ?? false)
-            }
         }
         // A name that differs from a participant only by case uses the roster's spelling.
         func spelled(_ name: String) -> String {

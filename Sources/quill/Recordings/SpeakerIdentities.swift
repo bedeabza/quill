@@ -61,6 +61,9 @@ struct SpeakerIdentities: Codable, Hashable, Sendable {
                 result.segments[index].speaker_name = person.name.map(canonicalName)
                 result.segments[index].person_id = person.id
                 result.segments[index].attribution = "manual"
+            } else if Self.inferredAttributions.contains(segment.attribution ?? "") {
+                result.segments[index].speaker_name = nil
+                result.segments[index].attribution = "unconfirmed_identity"
             } else if let name = segment.speaker_name {
                 result.segments[index].speaker_name = canonicalName(name)
             }

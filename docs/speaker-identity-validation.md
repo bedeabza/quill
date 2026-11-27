@@ -1,8 +1,8 @@
 # Speaker identity validation
 
 The speaker editor supports confirmed voice links and participant aliases.
-Automatic microphone naming and roster inferences retain their existing behavior;
-changes to that policy are proposed separately.
+The separate microphone-policy proposal requires confirmation for local voices
+and no longer uses microphone-majority or roster-elimination inferences.
 
 - Repeated roster labels are coalesced across local/remote observations. Nicknames
   and reordered names require a confirmed alias. Equal names alone never link voices.
@@ -14,9 +14,9 @@ changes to that policy are proposed separately.
   edits queue a new correction when automatic uploads are enabled.
 - Voice links are bound to the original transcript's SHA-256. Regeneration invalidates
   them while preserving aliases. Stale editor state cannot save old voice links.
-- Existing automatic names remain available. Preserving a source-inferred name while
-  editing another voice does not silently promote that inference to user confirmation.
+- Existing source-inferred names appear as unknown until confirmed; manual names
+  remain available. The original transcript and observations stay unchanged.
 
-See [review revision validation](pr-revision-validation.md) for current checks and
+See [microphone policy validation](microphone-identity-policy.md) for checks and
 limitations. All regression fixtures use fictional participants. No existing user
 recordings were relabelled or modified.

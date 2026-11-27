@@ -1,22 +1,11 @@
 import Foundation
 
-/// Maps provider diarization to recorded active-speaker evidence. No local
-/// speaker model, voice memory or text cleanup is used. On the combined meeting
-/// recording two labelled inferences can complete the names: the one voice heard
-/// mostly in microphone-only windows is the local user, and the last unnamed
-/// voice gets the last unused roster name when voices and names number the same.
+/// Maps provider voices to remote active-speaker evidence. A microphone or a
+/// local meeting tile identifies an endpoint, which may contain several people.
+/// Local voices and unmatched remote voices require explicit confirmation.
 enum ElevenLabsTranscripts {
     static let threshold = 0.95
-    /// Observed evidence must cover this share of a speaker's speech. A remote
-    /// border lit by line noise can leak into a pause in another voice; a few
-    /// milliseconds of it must not name that whole voice at 100% agreement.
     static let minimumObservedFraction = 0.25
-    /// The local voice: at least this share of its single-source audio is
-    /// microphone-only, covering a quarter of its speech and a few seconds.
-    static let localMajorityShare = 0.9
-    static let localMinimumSeconds = 5.0
-    /// No other voice may be mostly microphone-only (a second person in the room).
-    static let otherLocalShareLimit = 0.5
 
     struct TrackResult {
         let track: SessionMeta.Track
@@ -40,7 +29,7 @@ enum ElevenLabsTranscripts {
         var local_seconds: Double? = nil
         var remote_seconds: Double? = nil
         /// The name this voice gets in the named copy, and how: meeting_timeline
-        /// (evidence), local_microphone_majority or roster_elimination.
+        /// (evidence). Source-only inferences in older reports are not trusted.
         var name: String? = nil
         var attribution: String? = nil
     }
@@ -50,7 +39,7 @@ enum ElevenLabsTranscripts {
         var minimum_observed_fraction = ElevenLabsTranscripts.minimumObservedFraction
         var rule = "Every remote speaker needs >=95% agreement by observed speech duration, observed over >=25% of their speech. Missing evidence fails; unobserved speech is excluded from the agreement denominator."
         var inference: String? = nil
-        /// Every speaker has a name, by evidence or inference: a named copy exists.
+        /// Every speaker has an evidence-backed name: a named copy exists.
         let accepted: Bool
         let speakers: [SpeakerEvidenceReport]
     }
@@ -96,14 +85,8 @@ enum ElevenLabsTranscripts {
     }
 
     private static func timelineSpans(_ observations: [SpeakerObservation], origin: Double,
-                                      meetingAudio: MeetingAudio.Manifest? = nil, localName: String? = nil,
-                                      sharedMicrophone: Bool = false) -> [NamedSpeakerSpan] {
-        let samples = observations.flatMap { sample -> [SpeakerObservation] in
-            guard meetingAudio != nil, !sharedMicrophone, let local = sample.local_names, !local.isEmpty else { return [sample] }
-            return [sample, .init(observed_at: sample.observed_at, meeting_id: sample.meeting_id,
-                names: local, source: sample.source, is_local: true)]
-        }
-        let activity = samples.filter {
+                                      meetingAudio: MeetingAudio.Manifest? = nil, localName: String? = nil) -> [NamedSpeakerSpan] {
+        let activity = observations.filter {
             ["meeting_tile", "zoom_border", "accessibility_active_speaker"].contains($0.source)
                 && $0.observed_at.isFinite
         }
@@ -116,13 +99,12 @@ enum ElevenLabsTranscripts {
             return sample.names.compactMap { raw -> NamedSpeakerSpan? in
                 guard let name = SpeakerAttribution.cleanName(raw) else { return nil }
                 let local = sample.is_local == true || SpeakerAttribution.isLocalName(name, localName: localName)
-                guard meetingAudio != nil || !local, !local || !sharedMicrophone else { return nil }
+                guard !local else { return nil }
                 return NamedSpeakerSpan(start: max(0, time - 0.125), end: time + 0.125,
                     identity: .init(name: name, source: sample.source, evidence_count: 1))
             }.flatMap { span -> [NamedSpeakerSpan] in
                 guard let meetingAudio else { return [span] }
-                let local = sample.is_local == true || SpeakerAttribution.isLocalName(span.identity.name, localName: localName)
-                let windows = local ? meetingAudio.local_windows : meetingAudio.remote_windows
+                let windows = meetingAudio.remote_windows
                 // Sorted disjoint source windows: binary search avoids scanning
                 // a full hour's envelope for every 250ms UI observation.
                 var low = 0, high = windows.count
@@ -154,57 +136,6 @@ enum ElevenLabsTranscripts {
             if intervals[i].end < windows[j].end { i += 1 } else { j += 1 }
         }
         return total
-    }
-
-    /// Names the combined recording's unnamed voices by microphone majority, then
-    /// by elimination against the roster. Evidence-backed names are never changed,
-    /// and a voice whose evidence names someone else blocks the inference.
-    static func infer(_ reports: inout [SpeakerEvidenceReport], roster: ParticipantRoster,
-                              localName: String?, sharedMicrophone: Bool) {
-        func same(_ lhs: String?, _ rhs: String?) -> Bool {
-            guard let lhs, let rhs else { return false }
-            return lhs.caseInsensitiveCompare(rhs) == .orderedSame
-        }
-        // Substantial evidence for someone else: a majority over the coverage
-        // floor, short only of 95%. A stray lit border in a pause does not count.
-        func contradicts(_ report: SpeakerEvidenceReport, _ name: String) -> Bool {
-            guard let candidate = report.candidate_name, !same(candidate, name) else { return false }
-            return report.agreement >= 0.5 && report.observed_fraction + 1e-10 >= minimumObservedFraction
-        }
-        if let localName, !sharedMicrophone,
-           !reports.contains(where: { $0.name != nil && same($0.name, localName) }) {
-            func share(_ report: SpeakerEvidenceReport) -> Double {
-                let local = report.local_seconds ?? 0, total = local + (report.remote_seconds ?? 0)
-                return total > 0 ? local / total : 0
-            }
-            let candidates = reports.indices.filter { index in
-                let report = reports[index], local = report.local_seconds ?? 0
-                return report.provider_speaker_id != nil && share(report) >= localMajorityShare
-                    && local >= localMinimumSeconds && local >= minimumObservedFraction * report.speech_seconds
-            }
-            if candidates.count == 1, let index = candidates.first, reports[index].name == nil,
-               !contradicts(reports[index], localName),
-               !reports.indices.contains(where: { $0 != index && share(reports[$0]) >= otherLocalShareLimit }) {
-                reports[index].name = localName
-                reports[index].attribution = "local_microphone_majority"
-            }
-        }
-        var names: [String] = []
-        for participant in roster.participants {
-            if let name = SpeakerAttribution.cleanName(participant.name), !names.contains(where: { same($0, name) }) { names.append(name) }
-        }
-        let voices = reports.indices.filter { reports[$0].provider_speaker_id != nil }
-        let named = voices.compactMap { reports[$0].name }
-        let unnamed = voices.filter { reports[$0].name == nil }
-        let unused = names.filter { name in !named.contains(where: { same($0, name) }) }
-        // Every assigned name is a distinct roster member, so the counts mean something.
-        // A shared microphone can carry people who are not on the roster.
-        guard !sharedMicrophone, voices.count == reports.count, names.count == voices.count, unnamed.count == 1, unused.count == 1,
-              Set(named.map { $0.lowercased() }).count == named.count,
-              named.allSatisfy({ name in names.contains(where: { same($0, name) }) }),
-              let index = unnamed.first, let name = unused.first, !contradicts(reports[index], name) else { return }
-        reports[index].name = name
-        reports[index].attribution = "roster_elimination"
     }
 
     static func build(meta: SessionMeta, tracks: [TrackResult], roster: ParticipantRoster,
@@ -244,11 +175,10 @@ enum ElevenLabsTranscripts {
             let turns = speech.flatMap { id, intervals in intervals.map { SpeakerTurn(speaker_id: id, start: $0.start, end: $0.end) } }
             analysis.turns += turns.map { SpeakerTurn(speaker_id: $0.speaker_id, start: $0.start + offset, end: $0.end + offset) }
             statuses[source] = result.segments.isEmpty ? "no_speech_detected" : "elevenlabs"
-            guard source == "system" || source == "meeting" else { continue }
             let spans: [NamedSpeakerSpan]
-            if let started = meta.audioStartedAt {
+            if inferNames, source != "mic", let started = meta.audioStartedAt {
                 spans = timelineSpans(observations, origin: started + offset, meetingAudio: result.meetingAudio,
-                                      localName: meta.localSpeakerName, sharedMicrophone: meta.sharedMicrophone)
+                                      localName: meta.localSpeakerName)
             } else { spans = [] }
             analysis.named_spans += spans.map { NamedSpeakerSpan(start: $0.start + offset, end: $0.end + offset, identity: $0.identity) }
             var trackReports: [SpeakerEvidenceReport] = []
@@ -295,9 +225,6 @@ enum ElevenLabsTranscripts {
                 }
                 trackReports.append(report)
             }
-            if inferNames, source == "meeting", result.meetingAudio != nil {
-                infer(&trackReports, roster: roster, localName: meta.localSpeakerName, sharedMicrophone: meta.sharedMicrophone)
-            }
             reports += trackReports
         }
         merged.sort { $0.start_ms < $1.start_ms }
@@ -305,9 +232,7 @@ enum ElevenLabsTranscripts {
         var report = MappingReport(accepted: !reports.isEmpty && reports.allSatisfy { $0.name != nil }, speakers: reports)
         if tracks.contains(where: { $0.track.source == "meeting" }) {
             report.rule = "Every speaker in the combined meeting recording needs >=95% agreement by observed speech duration, observed over >=25% of their speech. Only clear matching-source audio windows may vote. Missing evidence fails; unobserved speech is excluded from the agreement denominator."
-            if inferNames {
-                report.inference = "Unnamed voices may be inferred and are labelled so: local_microphone_majority when exactly one voice is >=90% microphone-only (>=5 s, >=25% of its speech) and no other voice is >=50%; then roster_elimination when voices and distinct roster names are equal in number and exactly one voice and one name remain. Evidence naming someone else blocks either inference."
-            }
+            report.inference = "Audio sources and roster counts do not establish person identity. Local voices require user confirmation."
         }
         let original = Transcript(engine: "elevenlabs", model: "scribe_v2", created_at: createdAt, segments: merged,
             schema_version: 3, speaker_detection: statuses, participant_roster: roster,
@@ -324,9 +249,6 @@ enum ElevenLabsTranscripts {
                 if let assigned = names[segment.speaker] {
                     updated.segments[index].speaker_name = assigned.name
                     updated.segments[index].attribution = assigned.attribution
-                } else if segment.source == "mic", !meta.sharedMicrophone, let name = meta.localSpeakerName {
-                    updated.segments[index].speaker_name = name
-                    updated.segments[index].attribution = "local_microphone"
                 }
             }
             named = updated

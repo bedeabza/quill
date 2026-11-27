@@ -1,6 +1,17 @@
 import XCTest
 @testable import quill
 
+private actor RoomTranscriptionStub: TranscriptionEngine {
+    nonisolated let name = "parakeet"
+    nonisolated let model = "fixture"
+    func prepare() async throws {}
+    func release() async {}
+    func transcribe(_ audio: URL) async throws -> [TranscriptSegment] {
+        [.init(start: 0, end: 1, text: "First voice", words: [.init(start: 0, end: 1, text: "First voice")]),
+         .init(start: 2, end: 3, text: "Second voice", words: [.init(start: 2, end: 3, text: "Second voice")])]
+    }
+}
+
 final class SpeakerIdentitiesTests: XCTestCase {
     private func fixture() throws -> URL {
         let directory = RecordingsLibrary.canonicalDirectory(FileManager.default.temporaryDirectory.appendingPathComponent("quill-people-" + UUID().uuidString))
@@ -111,7 +122,7 @@ final class SpeakerIdentitiesTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: url), before)
     }
 
-    func testExistingMicrophoneInferenceAndManualNameRemainAvailable() throws {
+    func testLegacyMicrophoneGuessIsUnknownButManualNameSurvives() throws {
         let directory = try fixture()
         var named = try JSONDecoder().decode(Transcript.self, from: Data(contentsOf: directory.appendingPathComponent("transcript.json")))
         named.segments[0].speaker_name = "Jamie"
@@ -120,9 +131,32 @@ final class SpeakerIdentitiesTests: XCTestCase {
         named.segments[1].attribution = "manual"
         try named.write(to: directory, basename: "transcript-named")
         guard case .turns(let turns) = try RecordingsLibrary.transcript(in: directory, named: true) else { return XCTFail() }
-        XCTAssertEqual(turns[0].speaker, "Jamie")
+        XCTAssertEqual(turns[0].speaker, "Speaker 1")
         XCTAssertEqual(turns[1].speaker, "Alex")
-        XCTAssertEqual(SpeakerNames.state(in: directory)?.rows.map(\.name), ["Jamie", "Alex"])
+        XCTAssertEqual(SpeakerNames.state(in: directory)?.rows.map(\.name), [nil, "Alex"])
+    }
+
+    func testLocalEngineSeparatesMicrophoneEvenWhenSharedSettingIsOff() async throws {
+        let directory = try fixture()
+        try Data(#"{"files":{"mic":"mic.caf"},"audio_started_at":1000,"local_speaker_name":"Jamie Morgan","shared_microphone":false}"#.utf8)
+            .write(to: directory.appendingPathComponent("meta.json"))
+        try Data().write(to: directory.appendingPathComponent("mic.caf"))
+        let coordinator = TranscriptionCoordinator(makeEngine: { _, _ in RoomTranscriptionStub() }, completed: { _ in },
+            analyzeSpeakers: { _, source, count, _ in
+                XCTAssertEqual(source, "mic")
+                XCTAssertNil(count, "Never assume one person on the microphone")
+                return SpeakerAnalysis(turns: [.init(speaker_id: "mic_1", start: 0, end: 1),
+                                               .init(speaker_id: "mic_2", start: 2, end: 3)], names: [:])
+            })
+        try await coordinator.transcribe(directory, detectSpeakers: true)
+        let url = directory.appendingPathComponent("transcript.json")
+        let separated = try JSONDecoder().decode(Transcript.self, from: Data(contentsOf: url))
+        XCTAssertEqual(Set(separated.segments.map(\.speaker)), ["mic_1", "mic_2"])
+        XCTAssertTrue(separated.segments.allSatisfy { $0.speaker_name == nil })
+        XCTAssertEqual(separated.speaker_detection?["mic"], "complete")
+        try await coordinator.transcribe(directory, detectSpeakers: false)
+        let unseparated = try JSONDecoder().decode(Transcript.self, from: Data(contentsOf: url))
+        XCTAssertTrue(unseparated.segments.allSatisfy { $0.speaker_name == nil && $0.displayName == "Local voices (unseparated)" })
     }
 
     @MainActor
