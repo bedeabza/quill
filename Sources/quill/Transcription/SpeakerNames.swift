@@ -1,7 +1,7 @@
 import Darwin
 import Foundation
 
-/// Names chosen by the user for a Scribe recording's voices, and the most likely
+/// Names chosen by the user for a Scribe recording's voices and the most likely
 /// defaults offered for them. The original transcript is never edited: names go
 /// into the separate named copy, with `manual` attribution.
 enum SpeakerNames {
@@ -14,6 +14,7 @@ enum SpeakerNames {
         let name: String?
         /// Why that name is pre-selected; nil for Unknown.
         let reason: String?
+        var personID: String? = nil
     }
 
     struct State: Hashable, Sendable {
@@ -22,6 +23,9 @@ enum SpeakerNames {
         let names: [String]
         /// The named copy names every voice.
         let complete: Bool
+        var observedNames: [String] = []
+        var aliases: [String: String] = [:]
+        var transcriptFingerprint: String? = nil
     }
 
     private static func percent(_ value: Double) -> String { "\(Int((value * 100).rounded(.down)))%" }
@@ -121,19 +125,22 @@ enum SpeakerNames {
         func spelled(_ name: String) -> String {
             participants.first { $0.caseInsensitiveCompare(name) == .orderedSame } ?? name
         }
+        let identities = SpeakerIdentities.read(in: directory)
         var fixed: [String: (name: String, attribution: String?)] = [:]
         let named = (try? Data(contentsOf: directory.appendingPathComponent("transcript-named.json")))
             .flatMap { try? decoder.decode(Transcript.self, from: $0) }
-        for segment in named?.segments ?? [] where fixed[segment.speaker] == nil {
+        for segment in named.map(identities.resolved)?.segments ?? [] where fixed[segment.speaker] == nil {
             if let name = segment.speaker_name { fixed[segment.speaker] = (spelled(name), segment.attribution) }
         }
         let present = Set(original.segments.map(\.speaker))
         let rows = Self.rows(speakers, fixed: fixed, participants: participants, localName: meta?.localSpeakerName)
             .filter { present.contains($0.speaker) }
-            .map { Row(speaker: $0.speaker, label: $0.label, name: $0.name.map(spelled), reason: $0.reason) }
+            .map { Row(speaker: $0.speaker, label: $0.label, name: $0.name.map(spelled).map(identities.canonicalName), reason: $0.reason,
+                       personID: identities.person(for: $0.speaker)?.id) }
         var names = participants
         for name in rows.compactMap(\.name) where !names.contains(where: { $0.caseInsensitiveCompare(name) == .orderedSame }) { names.append(name) }
-        return State(rows: rows, names: names, complete: !rows.isEmpty && rows.allSatisfy { fixed[$0.speaker] != nil })
+        return State(rows: rows, names: identities.participantNames(names), complete: !rows.isEmpty && rows.allSatisfy { fixed[$0.speaker] != nil },
+                     observedNames: participants, aliases: identities.aliases, transcriptFingerprint: SpeakerIdentities.fingerprint(data))
     }
 
     /// Writes the named copy from the original transcript with `names` (speaker
@@ -142,7 +149,8 @@ enum SpeakerNames {
     /// named copy gave them. A replaced named copy is kept under
     /// `speaker-label-backup-<id>/`, which is returned. Naming nobody removes it.
     @discardableResult
-    static func apply(_ names: [String: String], in directory: URL, keepingOtherNames: Bool = false) throws -> URL? {
+    static func apply(_ names: [String: String], in directory: URL, keepingOtherNames: Bool = false,
+                      groups: [String: String]? = nil, aliases: [String: String]? = nil, expectedFingerprint: String? = nil) throws -> URL? {
         let fm = FileManager.default
         let lock = open(directory.appendingPathComponent(".postprocess.lock").path, O_CREAT | O_RDWR | O_CLOEXEC, 0o600)
         guard lock >= 0 else { throw TranscriptionFailure("Could not lock this recording.") }
@@ -152,6 +160,9 @@ enum SpeakerNames {
         }
         let url = directory.appendingPathComponent("transcript.json")
         let data = try Data(contentsOf: url)
+        if let expectedFingerprint, expectedFingerprint != SpeakerIdentities.fingerprint(data) {
+            throw TranscriptionFailure("The transcript changed. Cancel these edits and reopen the speaker editor.")
+        }
         let original = try JSONDecoder().decode(Transcript.self, from: data)
         guard original.engine == "elevenlabs", original.variant == "elevenlabs_original" else {
             throw TranscriptionFailure("Only ElevenLabs transcripts get a separate named copy.")
@@ -183,7 +194,17 @@ enum SpeakerNames {
             named.segments[index].speaker_name = name
             named.segments[index].attribution = "manual"
         }
-        let files = ["transcript-named.json", "transcript-named.md"]
+        let previousIdentities = SpeakerIdentities.read(in: directory)
+        var effectiveNames: [String: String] = [:]
+        for segment in named.segments {
+            if let name = segment.speaker_name, !SpeakerIdentities.inferredAttributions.contains(segment.attribution ?? "") {
+                effectiveNames[segment.speaker] = name
+            }
+        }
+        let identities = try SpeakerIdentities.make(original: data, names: effectiveNames, groups: groups ?? [:],
+                                                    aliases: aliases ?? previousIdentities.aliases, previous: previousIdentities)
+        named = identities.resolved(named)
+        let files = ["transcript-named.json", "transcript-named.md", SpeakerIdentities.filename]
         var backup: URL?
         if files.contains(where: { fm.fileExists(atPath: directory.appendingPathComponent($0).path) }) {
             let saved = directory.appendingPathComponent("speaker-label-backup-" + UUID().uuidString)
@@ -195,6 +216,8 @@ enum SpeakerNames {
         }
         guard try Data(contentsOf: url) == data else { throw TranscriptionFailure("The transcript changed while naming speakers.") }
         do {
+            let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            try encoder.encode(identities).write(to: directory.appendingPathComponent(SpeakerIdentities.filename), options: .atomic)
             if !named.segments.contains(where: { $0.speaker_name != nil }) { try ElevenLabsTranscripts.removeNamedVariant(in: directory) }
             else { try named.write(to: directory, basename: "transcript-named") }
         } catch {

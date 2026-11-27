@@ -55,6 +55,10 @@ struct Transcribe: ParsableCommand {
         }
         try await TranscriptionCoordinator().transcribe(dir, detectSpeakers: !noSpeakers, remoteSpeakerCount: remoteSpeakers,
                                                         engineOverride: engine, offline: offline, learnVoiceMemory: output == nil)
+        if output == nil, !offline {
+            await S3UploadCoordinator.shared.enqueue(dir)
+            await S3UploadCoordinator.shared.waitUntilIdle()
+        }
         print(dir.appendingPathComponent("transcript.md").path)
     }
 }
