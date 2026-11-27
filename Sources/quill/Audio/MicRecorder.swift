@@ -38,6 +38,8 @@ final class MicRecorder: @unchecked Sendable {
     private static let restartLimit = 10
 
     private var engine = AVAudioEngine()
+    // Callbacks carry a value token; the AVAudioEngine stays on the control thread.
+    private var engineGeneration = UUID()
     private var track: MicTrack?
     private var url: URL?
     private(set) var isRecording = false
@@ -90,6 +92,7 @@ final class MicRecorder: @unchecked Sendable {
     /// input change, and with voiceProcessing: false if the liveness check trips.
     private func attach(voiceProcessing: Bool) throws {
         engine = AVAudioEngine()
+        engineGeneration = UUID()
         let input = engine.inputNode
 
         var voice = voiceProcessing
@@ -171,14 +174,14 @@ final class MicRecorder: @unchecked Sendable {
             throw RecorderError.engineStartFailed(error)
         }
         inputDevice = Self.defaultInputDevice()
-        let engine = engine
+        let generation = engineGeneration
         configurationObserver = NotificationCenter.default.addObserver(
             forName: .AVAudioEngineConfigurationChange, object: engine, queue: .main
         ) { [weak self] _ in
             // A route change the engine survived needs nothing, nor a
             // notification already queued for an engine since replaced.
-            guard let self, engine === self.engine,
-                  !engine.isRunning || engine.inputNode.outputFormat(forBus: 0) != inputFormat else { return }
+            guard let self, generation == self.engineGeneration,
+                  !self.engine.isRunning || self.engine.inputNode.outputFormat(forBus: 0) != inputFormat else { return }
             self.scheduleRestart("input configuration changed")
         }
 
@@ -212,7 +215,7 @@ final class MicRecorder: @unchecked Sendable {
     /// the only recovery is restarting raw.
     private func installVoiceTap(on input: AVAudioInputNode, format: AVAudioFormat) {
         let checkFrames = Int(format.sampleRate)
-        let engine = engine
+        let generation = engineGeneration
         input.installTap(onBus: 0, bufferSize: 4096, format: format) { [weak self] buffer, when in
             guard let self else { return }
             if !self.livenessSettled {
@@ -226,7 +229,7 @@ final class MicRecorder: @unchecked Sendable {
                 if self.livenessFrames >= checkFrames {
                     self.livenessSettled = true
                     if self.livenessPeak == 0 {
-                        DispatchQueue.main.async { if engine === self.engine { self.fallBackToRaw() } }
+                        DispatchQueue.main.async { if generation == self.engineGeneration { self.fallBackToRaw() } }
                     }
                 }
             }

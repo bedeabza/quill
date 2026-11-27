@@ -94,7 +94,10 @@ final class TranscriptPlaybackTests: XCTestCase {
     /// from its offset, as `MeetingAudio` places it.
     func testCompositionPlaysEachTrackFromItsOffset() async throws {
         let dir = try directory(), rate = 16_000
-        let tone = (0..<rate).map { Int16(8000 * sin(Double($0) * 2 * .pi * 440 / Double(rate))) }
+        let phasePerSample = 2.0 * Double.pi * 440.0 / Double(rate)
+        let tone: [Int16] = (0..<rate).map { sample in
+            Int16(8000.0 * sin(Double(sample) * phasePerSample))
+        }
         try AudioTestSupport.write(dir.appendingPathComponent("system.caf"))
         try AudioTestSupport.write(dir.appendingPathComponent("mic.caf"), samples: tone)
         let composition = try await TranscriptPlayback.composition([.init(url: dir.appendingPathComponent("mic.caf"), offset: 0.5),

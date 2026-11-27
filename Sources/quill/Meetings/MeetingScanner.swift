@@ -78,6 +78,7 @@ actor MeetingScanner {
         let isTab: Bool
         let selected: Bool
         let activeSpeaker: String?
+        let controlLabels: [String]
         let parentIndex: Int?
         let classNames: [String]
         let subrole: String
@@ -320,12 +321,18 @@ actor MeetingScanner {
                     if leave && (service == "Slack" || !ended) {
                         // A call window that returns after its window was hidden or
                         // replaced (Zoom screen sharing) continues the same meeting.
-                        let existing = known.values.first { $0.pid == app.pid && CFEqual($0.window, window.element) }
-                            ?? known.values.first { entry in
-                                entry.pid == app.pid && !entry.isBrowser && entry.meeting.service == service
-                                    && endedSince[entry.meeting.id] == nil
-                                    && !windows.contains { CFEqual($0.element, entry.window) }
+                        var existing = known.values.first { $0.pid == app.pid && CFEqual($0.window, window.element) }
+                        if existing == nil {
+                            // Keep AX windows on this actor, outside nonisolated autoclosures.
+                            for entry in known.values {
+                                guard entry.pid == app.pid, !entry.isBrowser, entry.meeting.service == service,
+                                      endedSince[entry.meeting.id] == nil else { continue }
+                                if !windows.contains(where: { CFEqual($0.element, entry.window) }) {
+                                    existing = entry
+                                    break
+                                }
                             }
+                        }
                         let id = existing?.meeting.id ?? nextID(pid: app.pid)
                         let title = MeetingEvidence.title(candidates: meetingTitleCandidates(window.nodes)
                             + [string(window.element, kAXTitleAttribute)], service: service)
@@ -340,7 +347,7 @@ actor MeetingScanner {
                 for node in window.browserTabs + window.browserDocuments {
                     let code = MeetingEvidence.service(url: node.url) == "Slack" ? nil
                         : MeetingEvidence.meetCode(in: node.url) ?? MeetingEvidence.meetCode(in: node.text)
-                    if ended && !node.isTab && MeetingEvidence.service(url: node.url) != "Slack" { continue }
+                    if ended && !node.isTab && !["Slack", "Microsoft Teams"].contains(MeetingEvidence.service(url: node.url) ?? "") { continue }
                     let matchingTab: AXUIElement?
                     if node.isTab { matchingTab = node.element }
                     else if window.browserDocuments.count == 1 {
@@ -359,8 +366,18 @@ actor MeetingScanner {
                     // A reused web area can navigate away from a call. Do not
                     // adopt an unrelated page using the old meeting's service.
                     if !node.isTab, node.url.hasPrefix("http"), MeetingEvidence.service(url: node.url) == nil { continue }
-                    guard let service = MeetingEvidence.service(url: node.url) ?? existing?.meeting.service,
-                          service == "Slack" || code != nil || leave || existing != nil else { continue }
+                    guard let service = MeetingEvidence.service(url: node.url) ?? existing?.meeting.service else { continue }
+                    if service != "Microsoft Teams", service != "Slack", code == nil, !leave, existing == nil { continue }
+                    if service == "Microsoft Teams" {
+                        // A tab title or another document's Leave button is not evidence
+                        // that this Teams page has actually joined a meeting.
+                        guard !node.isTab, let document = window.documents[node.element] else { continue }
+                        let visible = !bool(window.element, kAXMinimizedAttribute) && (matchingTab.map { tab in
+                            window.browserTabs.contains { $0.selected && CFEqual($0.element, tab) }
+                        } ?? true)
+                        let joined = teamsState(document, visible: visible) == .joined
+                        guard existing?.meeting.service == "Microsoft Teams" || joined else { continue }
+                    }
                     if existing?.meeting.service == "Slack", service != "Slack" { continue }
                     if service == "Slack", existing == nil {
                         // Never borrow another tab's call controls or a meeting
@@ -406,16 +423,28 @@ actor MeetingScanner {
                 guard let window = windows.first(where: { CFEqual($0.element, entry.window) }) else {
                     // A closed call window is a positive end signal. If another native
                     // call window appeared, keep recording through layout transitions.
-                    let anotherCall = app.service != nil && windows.contains { hasCallControls($0, service: app.service) }
+                    var anotherCall = false
+                    if app.service != nil {
+                        anotherCall = windows.contains { hasCallControls($0, service: app.service) }
+                    }
                     let zoom = app.service == "Zoom" && entry.meeting.service == "Zoom"
-                    let sharing = zoom && !anotherCall && windows.contains(where: isZoomShareWindow)
+                    var sharing = false
+                    if zoom && !anotherCall {
+                        sharing = windows.contains(where: isZoomShareWindow)
+                    }
                     let audio = zoom && !anotherCall && !sharing && AppAudioActivity.isRunning(pid: app.pid, bundleID: app.bundleID)
                     result.observations[entry.meeting.id] = MeetingEvidence.closedCallWindow(entry.meeting, anotherCallWindow: anotherCall,
                                                                                              zoomShareWindow: sharing, zoomAudioRunning: audio)
                     continue
                 }
-                let leave = hasCallControls(window, service: app.service)
-                let ended = window.nodes.contains { MeetingEvidence.isEndMessage($0.text) }
+                let teamsDocument = entry.isBrowser && entry.meeting.service == "Microsoft Teams"
+                    ? entry.document.flatMap { window.documents[$0] } : nil
+                let leave = entry.isBrowser && entry.meeting.service == "Microsoft Teams"
+                    ? teamsDocument.map { teamsState($0, visible: true) == .joined } ?? false
+                    : hasCallControls(window, service: app.service)
+                let ended = entry.isBrowser && entry.meeting.service == "Microsoft Teams"
+                    ? teamsDocument.map { teamsState($0, visible: true) == .ended } ?? false
+                    : window.nodes.contains { MeetingEvidence.isEndMessage($0.text) }
                 if captureSpeakers && !ended {
                     // Read only this call's established AX document, including
                     // when its browser tab or window is in the background.
@@ -542,6 +571,28 @@ actor MeetingScanner {
                     return entry.document.map { CFEqual($0, node.element) } == true
                         || (entry.code != nil && MeetingEvidence.meetCode(in: node.url) == entry.code)
                 }
+                if entry.meeting.service == "Microsoft Teams" {
+                    let visible = !bool(entry.window, kAXMinimizedAttribute) && (entry.tab.map { tab in
+                        window.browserTabs.contains { $0.selected && CFEqual($0.element, tab) }
+                    } ?? documentPresent)
+                    let document = entry.document.flatMap { window.documents[$0] }
+                    let state = document.map { teamsState($0, visible: visible) } ?? .unknown
+                    let navigatedAway = visible && window.complete && window.browserDocuments.contains { node in
+                        entry.document.map { CFEqual($0, node.element) } == true
+                            && node.url.hasPrefix("http") && !TeamsMeetingEvidence.isTeamsURL(node.url)
+                    }
+                    if endState.isEnded(entry.meeting.id, endScreen: state == .ended || navigatedAway, inCall: state == .joined) {
+                        result.observations[entry.meeting.id] = .ended
+                    } else if state == .joined || (!visible && (tabPresent || documentPresent)) {
+                        result.observations[entry.meeting.id] = .present(entry.meeting)
+                    } else if !tabPresent && !documentPresent, entry.tab != nil, window.complete,
+                              tabIsGone(entry.tab, hasVisibleTabs: !window.browserTabs.isEmpty) {
+                        result.observations[entry.meeting.id] = .ended
+                    } else {
+                        result.observations[entry.meeting.id] = .unknown
+                    }
+                    continue
+                }
                 if entry.meeting.service == "Slack" {
                     let visible = !bool(entry.window, kAXMinimizedAttribute) && (entry.tab.map { tab in
                         window.browserTabs.contains { $0.selected && CFEqual($0.element, tab) }
@@ -598,6 +649,13 @@ actor MeetingScanner {
         }
         result.observedAt = Date().timeIntervalSince1970
         return result
+    }
+
+    private func teamsState(_ document: Window, visible: Bool) -> TeamsMeetingEvidence.State {
+        TeamsMeetingEvidence.state(url: document.nodes.first?.url ?? "",
+            controls: document.nodes.map { .init(role: $0.role, labels: $0.controlLabels) },
+            texts: document.nodes.filter { ["AXStaticText", "AXHeading"].contains($0.role) }.map(\.text),
+            complete: document.complete, visible: visible)
     }
 
     private func slackState(_ window: Window, visible: Bool) -> SlackHuddleEvidence.State {
@@ -693,6 +751,7 @@ actor MeetingScanner {
             let activeSpeaker = SpeakerEvidence.activeName(label: description, role: role)
                 ?? SpeakerEvidence.activeName(label: title, role: role)
             nodes.append(Node(element: element, role: role, text: text, url: url, isTab: isTab, selected: selected, activeSpeaker: activeSpeaker,
+                              controlLabels: [title, description].filter { !$0.isEmpty },
                               parentIndex: parentIndex, classNames: readClasses ? strings(element, "AXDOMClassList") : [],
                               subrole: string(element, kAXSubroleAttribute), roleDescription: roleDescription))
             if skipWebContent && role == "AXWebArea" { continue }

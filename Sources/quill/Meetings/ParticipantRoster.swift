@@ -7,7 +7,7 @@ struct RosterMember: Codable, Equatable, Sendable {
 
 struct MeetingParticipant: Codable, Sendable {
     let name: String
-    let is_local: Bool
+    var is_local: Bool
     var first_seen: Double
     var last_seen: Double
     var sources: [String]
@@ -37,14 +37,8 @@ struct ParticipantRoster: Codable, Sendable {
         for member in members {
             guard let name = SpeakerAttribution.cleanName(member.name) else { continue }
             let local = member.is_local || SpeakerAttribution.isLocalName(name, localName: localName)
-            if let index = participants.firstIndex(where: { $0.name.caseInsensitiveCompare(name) == .orderedSame && $0.is_local == local }) {
-                participants[index].first_seen = min(participants[index].first_seen, observation.observed_at)
-                participants[index].last_seen = max(participants[index].last_seen, observation.observed_at)
-                if !participants[index].sources.contains(observation.source) { participants[index].sources.append(observation.source) }
-            } else {
-                participants.append(.init(name: name, is_local: local, first_seen: observation.observed_at,
-                                          last_seen: observation.observed_at, sources: [observation.source]))
-            }
+            record(.init(name: name, is_local: local, first_seen: observation.observed_at,
+                         last_seen: observation.observed_at, sources: [observation.source]))
         }
         guard observation.source == "meeting_roster" else { return }
         let remote = members.filter { !$0.is_local && !SpeakerAttribution.isLocalName($0.name, localName: localName) }
@@ -60,6 +54,17 @@ struct ParticipantRoster: Codable, Sendable {
         } else {
             intervals.append(.init(meeting_id: observation.meeting_id, start: time, end: time, remote_names: remote, complete: complete))
         }
+    }
+
+    /// Repeated roster labels describe observations, not separate voice identities.
+    /// Local/remote flags are endpoint evidence and must not duplicate a label.
+    private mutating func record(_ participant: MeetingParticipant) {
+        if let index = participants.firstIndex(where: { SpeakerIdentities.key($0.name) == SpeakerIdentities.key(participant.name) }) {
+            participants[index].is_local = participants[index].is_local || participant.is_local
+            participants[index].first_seen = min(participants[index].first_seen, participant.first_seen)
+            participants[index].last_seen = max(participants[index].last_seen, participant.last_seen)
+            for source in participant.sources where !participants[index].sources.contains(source) { participants[index].sources.append(source) }
+        } else { participants.append(participant) }
     }
 
     func soleRemoteIdentity(startMS: Int, endMS: Int) -> SpeakerIdentity? {
@@ -108,15 +113,17 @@ struct ParticipantRoster: Codable, Sendable {
 }
 
 extension ParticipantRoster {
-    /// Saved rosters are read as recorded, minus entries that are not names
-    /// (older Teams recordings saved every call-timer tick). Files stay unchanged.
+    /// Ignore non-names and coalesce repeated labels across endpoint flags.
+    /// The saved observations remain unchanged; voices are never merged here.
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         audio_started_at = try container.decode(Double.self, forKey: .audio_started_at)
-        participants = try container.decode([MeetingParticipant].self, forKey: .participants)
+        let observed = try container.decode([MeetingParticipant].self, forKey: .participants)
             .filter { SpeakerAttribution.cleanName($0.name) != nil }
+        participants = []
         intervals = try container.decode([Interval].self, forKey: .intervals)
         confirmed_sole_remote_speaker = try container.decodeIfPresent(String.self, forKey: .confirmed_sole_remote_speaker)
+        for participant in observed { record(participant) }
     }
 }
 

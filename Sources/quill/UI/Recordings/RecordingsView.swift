@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// Recordings: a day-grouped list on the left, the selected meeting's
 /// transcript on the right.
@@ -12,6 +13,18 @@ struct RecordingsView: View {
             .navigationTitle("Recordings")
             .searchable(text: $model.query, placement: .toolbar, prompt: "Search titles and people")
             .toolbar {
+                ToolbarItem(placement: .primaryAction) {
+                    if let entry = model.selectedEntry, entry.hasTranscript || entry.s3Blocked {
+                        S3StatusTag(entry: entry, enabled: model.s3Enabled)
+                    }
+                }
+                ToolbarItem(placement: .primaryAction) {
+                    Button("Export HTML…", systemImage: "square.and.arrow.up") {
+                        if let entry = model.selectedEntry { exportHTML(entry, model: model) }
+                    }
+                    .help("Export the displayed discussion, title and speaker names as an HTML file")
+                    .disabled(model.selectedEntry?.hasTranscript != true || model.isExportingHTML)
+                }
                 ToolbarItem(placement: .primaryAction) {
                     Button("Show in Finder", systemImage: "folder") {
                         if let entry = model.selectedEntry { model.showInFinder(entry) }
@@ -81,14 +94,60 @@ private struct RecordingActions: View {
 
     var body: some View {
         Button("Show in Finder") { model.showInFinder(entry) }
+        Button("Export HTML…") { exportHTML(entry, model: model) }
+            .disabled(!entry.hasTranscript || model.isExportingHTML)
         Button(entry.hasTranscript ? "Regenerate…" : "Transcribe…") { regenerate(entry) }
             .disabled(!model.canRegenerate(entry))
         if model.selection == entry.directory, model.speakerNames?.rows.isEmpty == false {
-            Button("Name Speakers…") { model.editingSpeakerNames = true }
+            Button("Name Speakers…") { model.openSpeakerNameEditor() }
                 .disabled(model.showsSpeakerNames)
         }
         Divider()
+        Button(entry.s3Blocked ? "Unblock & Sync Now" : "Sync Now to S3") { model.uploadToS3(entry) }
+            .disabled(!model.canSyncToS3(entry))
+        Button(entry.s3Blocked ? "Allow Automatic S3 Sync" : "Block S3 Sync") { model.setS3Blocked(!entry.s3Blocked, for: entry) }
+            .disabled(model.s3Actions.contains(entry.directory))
+        Divider()
         Button("Delete…") { confirmDelete(entry, model: model) }
+    }
+}
+
+/// The export is captured before presenting the save sheet; changing selection
+/// or background title/transcription work cannot alter what will be written.
+@MainActor func exportHTML(_ entry: RecordingEntry, model: RecordingsModel) {
+    guard entry.hasTranscript, !model.isExportingHTML else { return }
+    model.isExportingHTML = true
+    Task {
+        defer { model.isExportingHTML = false }
+        do {
+            let document = try await model.htmlExport(for: entry)
+            let panel = NSSavePanel()
+            panel.title = "Export Discussion as HTML"
+            panel.prompt = "Export"
+            panel.message = "Includes the displayed title, transcript and speaker names, including unsaved name edits. Recording files stay unchanged."
+            panel.allowedContentTypes = [.html]
+            panel.allowsOtherFileTypes = false
+            panel.canCreateDirectories = true
+            panel.isExtensionHidden = false
+            panel.nameFieldStringValue = document.suggestedFilename
+            NSApp.activate(ignoringOtherApps: true)
+            let result: NSApplication.ModalResponse = await withCheckedContinuation { continuation in
+                if let window = NSApp.keyWindow {
+                    panel.beginSheetModal(for: window) { continuation.resume(returning: $0) }
+                } else {
+                    panel.begin { continuation.resume(returning: $0) }
+                }
+            }
+            guard result == .OK, let destination = panel.url else { return }
+            try await Task.detached(priority: .userInitiated) { try document.write(to: destination) }.value
+            model.didExportHTML(destination, for: entry)
+        } catch {
+            let alert = NSAlert()
+            alert.messageText = "Couldn’t Export This Discussion"
+            alert.informativeText = (error as? TranscriptionFailure)?.description ?? error.localizedDescription
+            if let window = NSApp.keyWindow { _ = await alert.beginSheetModal(for: window) }
+            else { alert.runModal() }
+        }
     }
 }
 
@@ -169,7 +228,7 @@ private struct RecordingList: View {
             ForEach(model.sections) { section in
                 Section(section.title) {
                     ForEach(section.entries, id: \.directory) { entry in
-                        RecordingRow(entry: entry, status: model.status(of: entry))
+                        RecordingRow(entry: entry, status: model.status(of: entry), s3Enabled: model.s3Enabled)
                             .tag(entry.directory)
                             .onAppear { model.rowAppeared(entry) }
                             .onDisappear { model.rowDisappeared(entry) }
@@ -236,13 +295,15 @@ private struct RecordingList: View {
 private struct RecordingRow: View {
     let entry: RecordingEntry
     let status: RecordingStatus
+    let s3Enabled: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
             HStack(alignment: .firstTextBaseline) {
                 Text(entry.title)
                     .font(.system(size: 13, weight: .semibold))
-                    .lineLimit(1)
+                    .lineLimit(3)
+                    .help(entry.title)
                 Spacer(minLength: 8)
                 Text(entry.startedAt.formatted(date: .omitted, time: .shortened))
                     .font(.callout)
@@ -258,6 +319,7 @@ private struct RecordingRow: View {
                 StatusTag(status: status)
             }
             .font(.callout)
+            if entry.hasTranscript || entry.s3Blocked { S3StatusTag(entry: entry, enabled: s3Enabled) }
         }
         .padding(.vertical, 5)
         .padding(.horizontal, 2)
@@ -296,15 +358,41 @@ private struct RecordingDetail: View {
     @Bindable var model: RecordingsModel
     let entry: RecordingEntry
     let regenerate: (RecordingEntry) -> Void
-    /// Scroll to the spoken turn when it moves out of view; off once the user
-    /// scrolls, on again when they play a turn or choose Show Current.
+    @State private var signingInClaude = false
     @State private var following = true
     @State private var visibleTurns: Set<Int> = []
     @FocusState private var transcriptFocused: Bool
 
     var body: some View {
-        ScrollViewReader { proxy in
-            scroll
+        VStack(spacing: 0) {
+            VStack(alignment: .leading, spacing: 12) {
+                if case .turns(let turns) = model.transcript {
+                    speakerNavigation(turns)
+                }
+                if model.showsSpeakerNames, let state = model.speakerNames {
+                    SpeakerNamesForm(model: model, state: state, colors: turnColors)
+                }
+            }
+            .padding(.horizontal, 24)
+            .padding(.top, 18)
+            .padding(.bottom, 12)
+            .frame(maxWidth: 720, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            Divider()
+            ScrollViewReader { proxy in
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 16) {
+                        header
+                        if let banner { banner }
+                        transcriptBar
+                        transcript
+                    }
+                    .padding(.horizontal, 24)
+                    .padding(.vertical, 18)
+                    .frame(maxWidth: 720, alignment: .leading)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .onScrollPhaseChange { _, phase in if phase == .interacting { following = false } }
                 .onChange(of: model.player.activeTurn) { _, turn in
                     guard following, let turn, !visibleTurns.contains(turn) else { return }
                     withAnimation { proxy.scrollTo(turn, anchor: UnitPoint(x: 0.5, y: 0.2)) }
@@ -317,36 +405,21 @@ private struct RecordingDetail: View {
                         }
                     }
                 }
-        }
-        .onChange(of: entry.directory) { visibleTurns = []; following = true }
-    }
-
-    private var scroll: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 0) {
-                header
-                    .padding(.bottom, 18)
-                if let banner {
-                    banner.padding(.bottom, 18)
+                .onChange(of: model.speakerTurnRequest) { _, _ in
+                    following = false
+                    if let target = model.speakerTurnTarget {
+                        withAnimation(.easeInOut(duration: 0.2)) { proxy.scrollTo(target, anchor: .top) }
+                    }
                 }
-                if model.showsSpeakerNames, let state = model.speakerNames {
-                    SpeakerNamesForm(model: model, state: state, colors: turnColors)
-                        .id(state)
-                        .padding(.bottom, 18)
-                }
-                transcriptBar
-                    .padding(.bottom, 14)
-                transcript
             }
-            .padding(.horizontal, 28)
-            .padding(.top, 22)
-            .padding(.bottom, 28)
-            .frame(maxWidth: 720, alignment: .leading)
-            .frame(maxWidth: .infinity, alignment: .leading)
+            // ScrollViewReader otherwise contributes the lazy transcript's
+            // full ideal height to NavigationSplitView's column minimums.
+            .frame(minHeight: 0, maxHeight: .infinity)
         }
+        .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
         // Each recording opens at the top; refreshes of the same one keep the position.
         .id(entry.directory)
-        .onScrollPhaseChange { _, phase in if phase == .interacting { following = false } }
+        .sheet(isPresented: $signingInClaude) { ClaudeSignInSheet() }
     }
 
     private func play(_ turn: TranscriptTurn) {
@@ -367,9 +440,9 @@ private struct RecordingDetail: View {
             HStack(alignment: .firstTextBaseline, spacing: 10) {
                 Text(entry.title)
                     .font(.system(size: 22, weight: .bold))
+                    .fixedSize(horizontal: false, vertical: true)
                     .textSelection(.enabled)
                     .help(entry.originalTitle.map { $0 == entry.title ? "" : "Original title: \($0)" } ?? "")
-                titleButton
                 Spacer(minLength: 0)
                 Menu {
                     RecordingActions(model: model, entry: entry, regenerate: regenerate)
@@ -382,6 +455,21 @@ private struct RecordingDetail: View {
                 .fixedSize()
                 .help("Regenerate or delete this recording")
             }
+            HStack(spacing: 10) {
+                titleButton
+                if entry.titleSource == "local" {
+                    Text(entry.titleStatus == "ai_failed" ? "Local title · AI generation failed"
+                         : entry.titleStatus == "ai_unavailable" ? "Local title · AI unavailable" : "Local title")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .help("AI titles use the helper chosen in Transcription settings. Check that helper’s sign-in if generation fails.")
+                    if Config.recordingTitleMode() == .claude, ["ai_failed", "ai_unavailable"].contains(entry.titleStatus ?? "") {
+                        Button("Sign In to Claude…") { signingInClaude = true }
+                            .buttonStyle(.borderless)
+                            .controlSize(.small)
+                    }
+                }
+            }
             VStack(alignment: .leading, spacing: 5) {
                 Label(RecordingFormat.when(entry), systemImage: "calendar")
                 Label(entry.participants.isEmpty ? "No participants recorded" : entry.participants.joined(separator: ", "),
@@ -393,6 +481,81 @@ private struct RecordingDetail: View {
             .font(.callout)
             .foregroundStyle(.secondary)
             .textSelection(.enabled)
+            VStack(alignment: .leading, spacing: 8) {
+                S3StatusTag(entry: entry, enabled: model.s3Enabled)
+                HStack {
+                    Button(entry.s3Blocked ? "Allow Automatic Sync" : "Block S3 Sync") { model.setS3Blocked(!entry.s3Blocked, for: entry) }
+                        .disabled(model.s3Actions.contains(entry.directory))
+                    Spacer()
+                    if model.s3Actions.contains(entry.directory) { ProgressView().controlSize(.small) }
+                    Button(entry.s3Blocked ? "Unblock & Sync Now" : "Sync Now") { model.uploadToS3(entry) }
+                        .disabled(!model.canSyncToS3(entry))
+                        .help("Upload a new Markdown copy of this discussion, even if it was already synced or automatic syncing is off.")
+                }
+                if entry.s3Blocked {
+                    Text("Automatic uploads and retries are blocked for this discussion. Files already sent to S3 are kept.")
+                        .font(.caption)
+                }
+                if let upload = entry.s3Upload {
+                    Text(upload.location).font(.caption).textSelection(.enabled)
+                    if let date = upload.uploadedAt { Text("Uploaded \(date.formatted(date: .abbreviated, time: .shortened))").font(.caption) }
+                    if let message = upload.message { Text(message).font(.callout).foregroundStyle(.orange) }
+                }
+                if let error = model.s3Errors[entry.directory] { Text(error).font(.callout).foregroundStyle(.orange) }
+                if !model.s3Enabled { Text("Automatic sync is off. Sync Now sends just this discussion using your saved S3 settings.").font(.caption) }
+                if !entry.hasTranscript { Text("Sync Now becomes available after transcription.").font(.caption) }
+                if model.hasSpeakerChanges { Text("Apply Names before syncing your changes.").font(.caption) }
+            }
+            .padding(12)
+            .background(Color.primary.opacity(0.04), in: .rect(cornerRadius: 8))
+        }
+    }
+
+    /// Outside the transcript's scroll view, so the voice controls stay put.
+    private func speakerNavigation(_ turns: [TranscriptTurn]) -> some View {
+        var seen: Set<String> = []
+        let voices = turns.filter { seen.insert($0.navigationID).inserted }
+        return VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text("Speakers").font(.headline)
+                Spacer()
+                if model.speakerNames?.rows.isEmpty == false {
+                    Button(model.showsSpeakerNames ? "Hide Name Editor" : "Edit Names") {
+                        if model.showsSpeakerNames { model.speakerNameEditorCollapsed = true }
+                        else { model.openSpeakerNameEditor() }
+                    }
+                        .buttonStyle(.borderless)
+                        .controlSize(.small)
+                        .disabled(model.isApplyingSpeakerNames)
+                }
+            }
+            ScrollView(.horizontal) {
+                HStack(spacing: 6) {
+                    ForEach(voices) { turn in
+                    let identity = turn.navigationID
+                    let label = turn.speakerID.map(SpeakerNames.label) ?? turn.speaker
+                    let name = model.displayName(for: turn)
+                    Button { model.nextSpeakerTurn(identity) } label: {
+                        HStack(spacing: 6) {
+                            Circle().fill(turnColors[identity] ?? .secondary).frame(width: 7, height: 7)
+                            Text(name == label ? label : "\(label) · \(name)")
+                                .lineLimit(1)
+                                .multilineTextAlignment(.leading)
+                            Image(systemName: "arrow.down").font(.caption2)
+                        }
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 5)
+                        .background(Color.primary.opacity(0.05), in: .rect(cornerRadius: 6))
+                    }
+                    .buttonStyle(.plain)
+                    .font(.callout)
+                    .help("Go to the next turn by \(name). Starts at the first turn and repeats after the last.")
+                    .accessibilityLabel("Next turn: \(label), \(name)")
+                    }
+                }
+            }
+            .scrollIndicators(.hidden)
+            .frame(height: 32)
         }
     }
 
@@ -468,7 +631,7 @@ private struct RecordingDetail: View {
                 // Lazy, so meetings of several hours scroll smoothly.
                 LazyVStack(alignment: .leading, spacing: 16) {
                     ForEach(turns) { turn in
-                        TurnView(turn: turn, color: colors[turn.speaker] ?? .primary, isActive: turn.id == active,
+                        TurnView(turn: turn, name: model.displayName(for: turn), color: colors[turn.navigationID] ?? .primary, highlighted: model.speakerTurnTarget == turn.id, isActive: turn.id == active,
                                  play: playable ? { play(turn) } : nil)
                             .id(turn.id)
                             .onScrollVisibilityChange(threshold: 0.5) { visible in
@@ -515,54 +678,91 @@ private struct RecordingDetail: View {
 }
 
 /// "Speaker 1 is [name]" for each voice of a Scribe transcript, pre-selected
-/// with the most likely name. Apply writes the named copy; the original stays.
+/// with confirmed names or accepted evidence. Apply preserves the original.
 private struct SpeakerNamesForm: View {
-    let model: RecordingsModel
+    @Bindable var model: RecordingsModel
     let state: SpeakerNames.State
     /// Transcript colours by displayed speaker, so each row matches its turns.
     let colors: [String: Color]
-    @State private var choices: [String: String?]
-
-    init(model: RecordingsModel, state: SpeakerNames.State, colors: [String: Color]) {
-        self.model = model
-        self.state = state
-        self.colors = colors
-        _choices = State(initialValue: Dictionary(uniqueKeysWithValues: state.rows.map { ($0.speaker, $0.name) }))
-    }
-
+    @State private var columns = 1
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Speakers")
-                    .font(.headline)
-                Text(state.rows.contains { $0.reason != nil }
-                     ? "Check the suggested names, then apply them to a named copy of the transcript."
-                     : "Choose who each voice is to create a named copy of the transcript.")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-            }
-            Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: 8, verticalSpacing: 6) {
-                ForEach(state.rows, id: \.speaker) { row in
-                    GridRow {
-                        HStack(spacing: 6) {
-                            Circle()
-                                .fill(colors[row.label] ?? row.name.flatMap { colors[$0] } ?? Color.secondary)
-                                .frame(width: 7, height: 7)
-                            Text("\(row.label) is")
+            Text("Name each voice. Link voices only when you know they are the same person. A microphone can contain several people.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            // Only the editor's overflow scrolls when there are many voices;
+            // the navigation controls above it remain fixed and reachable.
+            ScrollView {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 210), alignment: .leading)], alignment: .leading, spacing: 8) {
+                    ForEach(state.rows, id: \.speaker) { row in
+                        VStack(alignment: .leading, spacing: 3) {
+                            HStack(spacing: 6) {
+                                Circle().fill(colors[row.personID ?? row.speaker] ?? .secondary).frame(width: 7, height: 7)
+                                Text(row.label).font(.callout.weight(.medium))
+                                Text(caption(row)).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                            }
+                            HStack(spacing: 4) {
+                                TextField("Type a name", text: binding(row))
+                                    .textFieldStyle(.roundedBorder)
+                                    .accessibilityLabel("Name for \(row.label)")
+                                Menu {
+                                    ForEach(availableNames, id: \.self) { name in
+                                        Button(name) { model.setSpeakerName(name, for: row.speaker) }
+                                    }
+                                    Divider()
+                                    Button("Unknown") { model.setSpeakerName("", for: row.speaker) }
+                                    Divider()
+                                    Menu("Same person as…") {
+                                        ForEach(state.rows.filter { model.speakerGroup(for: $0) != model.speakerGroup(for: row) }, id: \.speaker) { other in
+                                            Button("\(other.label) · \(model.speakerName(for: other).isEmpty ? "Unknown" : model.speakerName(for: other))") {
+                                                model.linkSpeaker(row, to: other)
+                                            }
+                                        }
+                                    }
+                                    if state.rows.filter({ model.speakerGroup(for: $0) == model.speakerGroup(for: row) }).count > 1 {
+                                        Button("Separate this voice") { model.separateSpeaker(row) }
+                                    }
+                                } label: {
+                                    Image(systemName: "person.crop.circle.badge.checkmark")
+                                }
+                                .menuStyle(.borderlessButton)
+                                .fixedSize()
+                                .help("Choose a participant for \(row.label)")
+                            }
                         }
-                        Picker(row.label, selection: binding(row.speaker)) {
-                            ForEach(state.names, id: \.self) { name in Text(name).tag(Optional(name)) }
-                            Divider()
-                            Text("Unknown").tag(String?.none)
-                        }
-                        .labelsHidden()
-                        .fixedSize()
-                        Text(caption(row))
-                            .font(.callout)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
                     }
                 }
+            }
+            .frame(height: min(180, CGFloat((state.rows.count + columns - 1) / columns) * 54))
+            .onGeometryChange(for: Int.self) { geometry in
+                max(1, Int((geometry.size.width + 8) / 218))
+            } action: { columns = $0 }
+            if !state.observedNames.isEmpty {
+                DisclosureGroup("Participant aliases") {
+                    Text("Choose a main name for alternate roster names. Voice links are a separate choice above.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 6) {
+                            ForEach(state.observedNames, id: \.self) { name in
+                                HStack {
+                                    Text(name).lineLimit(1)
+                                    Spacer()
+                                    Menu(model.participantAlias(for: name)) {
+                                        Button("Keep as a separate name") { model.setParticipantAlias(name, to: nil) }
+                                        Divider()
+                                        ForEach(state.observedNames.filter { SpeakerIdentities.key(model.participantAlias(for: $0)) != SpeakerIdentities.key(name) }, id: \.self) { target in
+                                            Button("Same participant as \(target)") { model.setParticipantAlias(name, to: target) }
+                                        }
+                                    }
+                                    .fixedSize()
+                                }
+                            }
+                        }
+                    }
+                    .frame(maxHeight: 110)
+                }
+                .font(.callout)
             }
             HStack(spacing: 8) {
                 if let error = model.speakerNamesError {
@@ -572,12 +772,13 @@ private struct SpeakerNamesForm: View {
                 }
                 Spacer(minLength: 0)
                 if model.isApplyingSpeakerNames { ProgressView().controlSize(.small) }
-                if state.complete {
-                    Button("Cancel") { model.editingSpeakerNames = false }
+                if state.complete || model.hasSpeakerChanges {
+                    Button("Cancel") { model.discardSpeakerNameChanges() }
                         .keyboardShortcut(.cancelAction)
+                        .disabled(model.isApplyingSpeakerNames)
                 }
-                Button("Apply Names") { model.applySpeakerNames(choices) }
-                    .disabled(model.isApplyingSpeakerNames || (!state.complete && choices.values.allSatisfy { $0 == nil }))
+                Button("Apply Names") { model.applySpeakerNameDrafts() }
+                    .disabled(model.isApplyingSpeakerNames || (!model.hasSpeakerChanges && !state.complete && state.rows.allSatisfy { model.speakerName(for: $0).isEmpty }))
                     .help("Writes a named copy of the transcript. The original transcript is kept unchanged.")
             }
             .controlSize(.small)
@@ -585,15 +786,28 @@ private struct SpeakerNamesForm: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
         .background(Color.primary.opacity(0.04), in: .rect(cornerRadius: 8))
+        .disabled(model.isApplyingSpeakerNames)
     }
 
-    private func binding(_ speaker: String) -> Binding<String?> {
-        Binding(get: { choices[speaker] ?? nil }, set: { choices[speaker] = $0 })
+    private var availableNames: [String] {
+        var names = state.names
+        for raw in model.speakerNameDrafts.values {
+            if let name = SpeakerAttribution.cleanName(raw), !names.contains(where: { $0.caseInsensitiveCompare(name) == .orderedSame }) {
+                names.append(name)
+            }
+        }
+        return names
+    }
+
+    private func binding(_ row: SpeakerNames.Row) -> Binding<String> {
+        Binding(get: { model.speakerName(for: row) }, set: { model.setSpeakerName($0, for: row.speaker) })
     }
 
     /// The reason while the suggestion stands; nothing once the user changes it.
     private func caption(_ row: SpeakerNames.Row) -> String {
-        let current = choices[row.speaker] ?? nil
+        let linked = state.rows.filter { $0.speaker != row.speaker && model.speakerGroup(for: $0) == model.speakerGroup(for: row) }
+        if let other = linked.first { return "Linked to \(other.label)" }
+        let current = SpeakerAttribution.cleanName(model.speakerName(for: row))
         guard current == row.name else { return "" }
         return row.reason ?? ""
     }
@@ -601,7 +815,9 @@ private struct SpeakerNamesForm: View {
 
 private struct TurnView: View {
     let turn: TranscriptTurn
+    let name: String
     let color: Color
+    let highlighted: Bool
     /// Being spoken: highlighted while the player is open.
     let isActive: Bool
     /// nil when the recording has no audio to play.
@@ -613,7 +829,7 @@ private struct TurnView: View {
             timestamp
                 .frame(width: 62, alignment: .leading)
             VStack(alignment: .leading, spacing: 3) {
-                Text(turn.speaker)
+                Text(name)
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(color)
                 Text(turn.text)
@@ -625,7 +841,7 @@ private struct TurnView: View {
         }
         // The highlight takes in the gutter and is drawn outside the layout, so nothing moves.
         .padding(EdgeInsets(top: 6, leading: 22, bottom: 6, trailing: 10))
-        .background(isActive ? Color.accentColor.opacity(0.1) : .clear, in: .rect(cornerRadius: 7))
+        .background(isActive ? Color.accentColor.opacity(0.1) : (highlighted ? color.opacity(0.1) : .clear), in: .rect(cornerRadius: 7))
         .padding(EdgeInsets(top: -6, leading: -22, bottom: -6, trailing: -10))
         .onHover { hovering = $0 }
     }
@@ -777,9 +993,35 @@ enum RecordingFormat {
     static func colors(_ turns: [TranscriptTurn]) -> [String: Color] {
         let palette: [Color] = [.blue, .orange, .green, .purple, .pink, .teal, .indigo, .brown]
         var colors: [String: Color] = [:]
-        for turn in turns where colors[turn.speaker] == nil {
-            colors[turn.speaker] = palette[colors.count % palette.count]
+        for turn in turns {
+            let identity = turn.navigationID
+            if colors[identity] == nil { colors[identity] = palette[colors.count % palette.count] }
         }
         return colors
+    }
+}
+
+private struct S3StatusTag: View {
+    let entry: RecordingEntry
+    var enabled = true
+    private var label: (String, String, Color) {
+        if entry.s3Blocked { return ("S3 sync blocked", "hand.raised.fill", .orange) }
+        guard let record = entry.s3Upload else { return ("Not uploaded to S3", "icloud.slash", .secondary) }
+        if record.phase != .uploaded, record.syncGeneration != entry.s3SyncPreference.generation {
+            return ("S3 sync stopped", "pause.circle", .secondary)
+        }
+        switch record.phase {
+        case .queued: return enabled || record.manualRequest == true ? ("Waiting for S3 upload", "clock", .secondary) : ("S3 upload paused", "pause.circle", .secondary)
+        case .uploading: return ("Uploading to S3…", "icloud.and.arrow.up", .blue)
+        case .failed: return ("S3 upload failed", "exclamationmark.icloud", .orange)
+        case .uploaded: return entry.s3Current ? ("Uploaded to S3", "checkmark.icloud.fill", .green)
+            : ("Changes not uploaded", "icloud.and.arrow.up", .orange)
+        }
+    }
+    var body: some View {
+        Label(label.0, systemImage: label.1)
+            .font(.caption.weight(.medium))
+            .foregroundStyle(label.2)
+            .accessibilityLabel(label.0)
     }
 }

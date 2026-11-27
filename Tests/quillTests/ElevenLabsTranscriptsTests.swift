@@ -245,7 +245,7 @@ final class ElevenLabsTranscriptsTests: XCTestCase, @unchecked Sendable {
         try AudioTestSupport.write(dir.appendingPathComponent("system.caf"))
         try Data(#"{"files":{"system":"system.caf"},"audio_started_at":1000,"meeting_title":"Planning"}"#.utf8)
             .write(to: dir.appendingPathComponent("meta.json"))
-        let coordinator = TranscriptionCoordinator { _, _ in DiarizedScribeStub() }
+        let coordinator = TranscriptionCoordinator(makeEngine: { _, _ in DiarizedScribeStub() }, completed: { _ in })
         try await coordinator.transcribe(dir, detectSpeakers: true, engineOverride: .elevenLabs)
         let url = dir.appendingPathComponent("transcript.json"), original = try Data(contentsOf: url)
         let transcript = try JSONDecoder().decode(Transcript.self, from: original)
