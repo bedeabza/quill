@@ -887,6 +887,13 @@ The feature is on by default and can be disabled in the menu, in
 `"meeting_detection": false` in the existing configuration file. Recordings,
 transcription, and `on_stop` archive hooks retain their normal behavior.
 
+Teams meetings in Chrome and other supported browsers start recording only after
+joined-call controls are visible in the Teams page. English and Romanian controls,
+including popup and microphone-toggle buttons, are recognized. Prejoin/lobby pages
+and another tab's controls do not start recording. Quill must already be running
+with **Automatic meeting recording** enabled and Accessibility access granted.
+See [Teams browser validation and limits](docs/teams-browser-recording-validation.md).
+
 For read-only diagnostics, use `quill meetings` or `quill meetings --watch`.
 The output lists app/service and detection state, without meeting content.
 `--windows` adds each desktop meeting app's window titles and button labels,
