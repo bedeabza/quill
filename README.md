@@ -226,6 +226,15 @@ Complete that flow, return to Quill and click **Verify Connection**, then
 upload meeting content. Quill does not collect passwords or copy OAuth tokens.
 The configured title provider is preserved; it is not switched on sign-in failure.
 
+If connection fails, open **Connection Log…** in the same Claude section or
+connection sheet. Retry **Sign In** or **Verify Connection**, then use **Refresh**
+and **Copy Log** to share diagnostics with support. **Show in Finder** reveals
+`~/Library/Logs/Quill/claude-connection.log`; **Clear Log** removes the history.
+The bounded local log records timestamps, app/macOS versions, connection stages,
+exit codes and error categories. It excludes raw CLI output, OAuth URLs/codes,
+credentials, account details and meeting content. See
+[Claude connection diagnostics](docs/claude-connection-diagnostics.md) for troubleshooting.
+
 **Quill → Permissions** checks Microphone, Accessibility (meeting detection),
 Screen Recording (Zoom speaker indicators), System audio, the Recordings folder,
 Transcription readiness for the default engine, and Notifications. A row shows a

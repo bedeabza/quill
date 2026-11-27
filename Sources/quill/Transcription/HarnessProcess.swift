@@ -7,6 +7,7 @@ enum HarnessProcess {
     struct Result: Sendable {
         let status: Int32
         let output: Data
+        var errorOutput: Data = Data()
     }
 
     enum Failure: Error {
@@ -92,6 +93,8 @@ enum HarnessProcess {
         let data = try Data(contentsOf: outputURL)
         guard data.count <= 4_000_000 else { throw Failure.outputTooLarge }
         let exitStatus = status & 0x7f == 0 ? (status >> 8) & 0xff : 128 + (status & 0x7f)
-        return Result(status: exitStatus, output: data)
+        let errorData = try Data(contentsOf: errorURL)
+        guard errorData.count <= 1_000_000 else { throw Failure.outputTooLarge }
+        return Result(status: exitStatus, output: data, errorOutput: errorData)
     }
 }

@@ -3,8 +3,14 @@ import XCTest
 
 @MainActor
 final class ClaudeSignInTests: XCTestCase {
+    private func diagnostics() -> ClaudeDiagnostics {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("quill-signin-log-test-" + UUID().uuidString)
+        addTeardownBlock { try? FileManager.default.removeItem(at: root) }
+        return ClaudeDiagnostics(file: root.appendingPathComponent("connection.log"))
+    }
+
     func testMissingHelperDoesNotOpenAnything() async {
-        let model = ClaudeSignInModel(find: { nil }, open: { _ in XCTFail("Cannot open without a helper") }, verify: { false })
+        let model = ClaudeSignInModel(find: { nil }, open: { _ in XCTFail("Cannot open without a helper") }, verify: { false }, diagnostics: diagnostics())
         await model.signIn()
         XCTAssertTrue(model.message?.contains("not found") == true)
         XCTAssertFalse(model.isBusy)
@@ -17,7 +23,7 @@ final class ClaudeSignInTests: XCTestCase {
             script = url
             XCTAssertTrue(FileManager.default.fileExists(atPath: url.path))
             throw TranscriptionFailure("Synthetic launch refusal")
-        }, verify: { false })
+        }, verify: { false }, diagnostics: diagnostics())
         await model.signIn()
         XCTAssertNotNil(script)
         XCTAssertFalse(FileManager.default.fileExists(atPath: try XCTUnwrap(script).deletingLastPathComponent().path))
@@ -26,12 +32,12 @@ final class ClaudeSignInTests: XCTestCase {
     }
 
     func testSuccessfulConnectionRequiresTheSyntheticCheckNotJustStoredCredentials() async {
-        let ready = ClaudeSignInModel(find: { nil }, open: { _ in }, verify: { true })
+        let ready = ClaudeSignInModel(find: { nil }, open: { _ in }, verify: { true }, diagnostics: diagnostics())
         XCTAssertFalse(ready.isConnected)
         await ready.checkConnection()
         XCTAssertTrue(ready.isConnected)
         XCTAssertTrue(ready.message?.contains("refresh") == true)
-        let expired = ClaudeSignInModel(find: { nil }, open: { _ in }, verify: { throw TranscriptionFailure("Synthetic expired credential") })
+        let expired = ClaudeSignInModel(find: { nil }, open: { _ in }, verify: { throw TranscriptionFailure("Synthetic expired credential") }, diagnostics: diagnostics())
         await expired.checkConnection()
         XCTAssertFalse(expired.isConnected)
         XCTAssertFalse(expired.isBusy)
