@@ -220,6 +220,10 @@ actor TranscriptionCoordinator {
             .split(separator: "\n").compactMap { try? JSONDecoder().decode(SpeakerObservation.self, from: Data($0.utf8)) }
         var roster = meta.participantRoster ?? ParticipantRoster(audio_started_at: meta.audioStartedAt ?? 0)
         if let started = meta.audioStartedAt { roster.audio_started_at = started }
+        if let name = meta.localSpeakerName, !meta.sharedMicrophone {
+            roster.observe(SpeakerObservation(observed_at: roster.audio_started_at, meeting_id: "local", names: [name],
+                                              source: "local_microphone", is_local: true), localName: name)
+        }
         for observation in observations { roster.observe(observation, localName: meta.localSpeakerName) }
 
         if engine.name == TranscriptionEngineKind.elevenLabs.rawValue {
@@ -262,7 +266,7 @@ actor TranscriptionCoordinator {
                 continue
             }
             let offset = TimeInterval(track.offsetMs) / 1000
-            if detectSpeakers && !segments.isEmpty {
+            if detectSpeakers && (track.speaker == "them" || meta.sharedMicrophone) && !segments.isEmpty {
                 do {
                     log(dir, "separating speakers in \(track.file)")
                     var trackAnalysis = try await analyzeSpeakers(audio, track.source,
@@ -302,6 +306,7 @@ actor TranscriptionCoordinator {
                     log(dir, "speaker detection failed for \(track.file): \(error); preserving unlabelled transcript")
                 }
             }
+            let localName = track.source == "mic" && !meta.sharedMicrophone ? meta.localSpeakerName : nil
             merged += segments.map {
                 Transcript.Segment(
                     speaker: track.speaker,
@@ -309,7 +314,8 @@ actor TranscriptionCoordinator {
                     end_ms: Int(($0.end + offset) * 1000),
                     text: $0.text,
                     source: track.source,
-                    attribution: "audio_source"
+                    speaker_name: localName,
+                    attribution: localName == nil ? "audio_source" : "local_microphone"
                 )
             }
         }

@@ -1,5 +1,17 @@
 import Foundation
 
+enum MicrophoneMode: String, CaseIterable, Sendable {
+    case personal, shared
+
+    var title: String { self == .personal ? "Personal microphone" : "Shared microphone" }
+    var explanation: String {
+        self == .personal
+            ? "Uses your configured name for the local voice and keeps automatic speaker-name suggestions."
+            : "Separates microphone voices when speaker detection is enabled. Leaves their names unconfirmed instead of guessing from microphone audio or roster counts."
+    }
+}
+
+
 /// Optional user config at ~/.config/quill/config.json:
 ///
 ///     {
@@ -62,7 +74,13 @@ enum Config {
         SpeakerAttribution.cleanName(load()?["zoom_local_speaker_name"] as? String) ?? localSpeakerName()
     }
     static func autoMeetingCaptions() -> Bool { load()?["auto_meeting_captions"] as? Bool ?? false }
-    static func sharedMicrophone() -> Bool { load()?["shared_microphone"] as? Bool ?? false }
+    static func sharedMicrophone() -> Bool { microphoneMode() == .shared }
+    static func microphoneMode(at url: URL = path) -> MicrophoneMode {
+        load(at: url)?["shared_microphone"] as? Bool == true ? .shared : .personal
+    }
+    static func setMicrophoneMode(_ mode: MicrophoneMode, at url: URL = path) throws {
+        try update(at: url) { $0["shared_microphone"] = mode == .shared }
+    }
     static func localSpeakerName() -> String? {
         SpeakerAttribution.cleanName(load()?["local_speaker_name"] as? String ?? NSFullUserName())
     }
@@ -151,14 +169,14 @@ enum Config {
     /// Parse the config file. A malformed config is reported on stderr rather
     /// than silently ignored — recordings landing in an unexpected place is
     /// worse than a warning.
-    private static func load() -> [String: Any]? {
-        guard FileManager.default.fileExists(atPath: path.path) else { return nil }
+    private static func load(at url: URL = path) -> [String: Any]? {
+        guard FileManager.default.fileExists(atPath: url.path) else { return nil }
         guard
-            let data = try? Data(contentsOf: path),
+            let data = try? Data(contentsOf: url),
             let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
         else {
             FileHandle.standardError.write(Data(
-                "warning: \(path.path) is not valid JSON — ignoring config\n".utf8
+                "warning: \(url.path) is not valid JSON — ignoring config\n".utf8
             ))
             return nil
         }

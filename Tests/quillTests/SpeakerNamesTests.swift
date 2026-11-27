@@ -23,14 +23,22 @@ final class SpeakerNamesTests: XCTestCase {
             voice("meeting_2", candidate: "Casey", agreement: 0.69, observed: 1.9, local: 257, remote: 2,
                   name: "Jordan Reed", attribution: "local_microphone_majority"),
             voice("meeting_3", candidate: "Riley", agreement: 0.24, observed: 52, local: 16, remote: 61),
-        ], participants: ["Jordan Reed", "Riley", "Casey"], localName: "Jordan Reed")
+        ], participants: ["Jordan Reed", "Riley", "Casey"], localName: "Jordan Reed", sharedMicrophone: true)
         XCTAssertEqual(rows.map(\.label), ["Speaker 1", "Speaker 2", "Speaker 3"])
         XCTAssertEqual(rows.map(\.name), [nil, nil, nil])
         XCTAssertNil(rows[1].reason)
         let crowded = SpeakerNames.rows([voice("meeting_1", candidate: "Casey", agreement: 0.9, observed: 50),
                                          voice("meeting_2", candidate: "Casey", agreement: 0.7, observed: 10)],
-                                        participants: ["Jordan Reed", "Casey", "Riley"], localName: nil)
+                                        participants: ["Jordan Reed", "Casey", "Riley"], localName: nil, sharedMicrophone: true)
         XCTAssertEqual(crowded.map(\.name), [nil, nil], "weak evidence must not preselect an identity")
+    }
+
+    func testPersonalMicrophoneKeepsExistingEditorSuggestions() {
+        let rows = SpeakerNames.rows([
+            voice("meeting_1", local: 90, remote: 0), voice("meeting_2", local: 0, remote: 90)
+        ], participants: ["Jamie", "Alex"], localName: "Jamie")
+        XCTAssertEqual(rows.map(\.name), ["Jamie", "Alex"])
+        XCTAssertEqual(rows.map(\.reason), ["Mostly your microphone", "Only participant left"])
     }
 
     func testApplyWritesAManualNamedCopyAndKeepsTheOriginal() throws {
@@ -71,6 +79,7 @@ final class SpeakerNamesTests: XCTestCase {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("quill-speaker-names-" + UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
         addTeardownBlock { try FileManager.default.removeItem(at: directory) }
+        try Data(#"{"files":{},"shared_microphone":true}"#.utf8).write(to: directory.appendingPathComponent("meta.json"))
         var roster = ParticipantRoster(audio_started_at: 1000)
         roster.participants = ["Jordan Reed", "Bob"].map { .init(name: $0, is_local: $0 == "Jordan Reed", first_seen: 1000, last_seen: 1010, sources: ["meeting_roster"]) }
         try Transcript(engine: "elevenlabs", model: "scribe_v2", created_at: "fixture", segments: [

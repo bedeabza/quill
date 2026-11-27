@@ -52,7 +52,7 @@ struct SpeakerIdentities: Codable, Hashable, Sendable {
 
     static let inferredAttributions: Set<String> = ["local_microphone", "local_microphone_majority", "roster_elimination"]
 
-    func resolved(_ transcript: Transcript) -> Transcript {
+    func resolved(_ transcript: Transcript, sharedMicrophone: Bool = false) -> Transcript {
         var result = transcript
         for index in result.segments.indices {
             let segment = result.segments[index]
@@ -61,7 +61,7 @@ struct SpeakerIdentities: Codable, Hashable, Sendable {
                 result.segments[index].speaker_name = person.name.map(canonicalName)
                 result.segments[index].person_id = person.id
                 result.segments[index].attribution = "manual"
-            } else if Self.inferredAttributions.contains(segment.attribution ?? "") {
+            } else if sharedMicrophone, Self.inferredAttributions.contains(segment.attribution ?? "") {
                 result.segments[index].speaker_name = nil
                 result.segments[index].attribution = "unconfirmed_identity"
             } else if let name = segment.speaker_name {

@@ -122,23 +122,50 @@ final class SpeakerIdentitiesTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: url), before)
     }
 
-    func testLegacyMicrophoneGuessIsUnknownButManualNameSurvives() throws {
-        let directory = try fixture()
-        var named = try JSONDecoder().decode(Transcript.self, from: Data(contentsOf: directory.appendingPathComponent("transcript.json")))
-        named.segments[0].speaker_name = "Jamie"
-        named.segments[0].attribution = "local_microphone_majority"
-        named.segments[1].speaker_name = "Alex"
-        named.segments[1].attribution = "manual"
-        try named.write(to: directory, basename: "transcript-named")
-        guard case .turns(let turns) = try RecordingsLibrary.transcript(in: directory, named: true) else { return XCTFail() }
-        XCTAssertEqual(turns[0].speaker, "Speaker 1")
-        XCTAssertEqual(turns[1].speaker, "Alex")
-        XCTAssertEqual(SpeakerNames.state(in: directory)?.rows.map(\.name), [nil, "Alex"])
+    func testRecordedModeControlsLegacyNamesInPreviewEditorAndExport() throws {
+        for shared in [false, true] {
+            let directory = try fixture()
+            let url = directory.appendingPathComponent("meta.json")
+            var meta = try JSONSerialization.jsonObject(with: Data(contentsOf: url)) as! [String: Any]
+            // Older recordings without the flag retain personal behavior.
+            if shared { meta["shared_microphone"] = true }
+            try JSONSerialization.data(withJSONObject: meta).write(to: url)
+            var named = try JSONDecoder().decode(Transcript.self, from: Data(contentsOf: directory.appendingPathComponent("transcript.json")))
+            named.segments[0].speaker_name = "Jamie"
+            named.segments[0].attribution = "local_microphone_majority"
+            named.segments[1].speaker_name = "Alex"
+            named.segments[1].attribution = "manual"
+            try named.write(to: directory, basename: "transcript-named")
+            let originalNamed = try Data(contentsOf: directory.appendingPathComponent("transcript-named.json"))
+            guard case .turns(let turns) = try RecordingsLibrary.transcript(in: directory, named: true) else { return XCTFail() }
+            XCTAssertEqual(turns[0].speaker, shared ? "Speaker 1" : "Jamie")
+            XCTAssertEqual(turns[1].speaker, "Alex")
+            XCTAssertEqual(SpeakerNames.state(in: directory)?.rows.map(\.name), [shared ? nil : "Jamie", "Alex"])
+            let markdown = String(decoding: try S3Markdown.make(in: directory).data, as: UTF8.self)
+            XCTAssertTrue(markdown.contains(shared ? "Speaker 1:**" : "Jamie:**"))
+            XCTAssertTrue(markdown.contains("Alex:**"))
+            XCTAssertEqual(try Data(contentsOf: directory.appendingPathComponent("transcript-named.json")), originalNamed)
+        }
     }
 
-    func testLocalEngineSeparatesMicrophoneEvenWhenSharedSettingIsOff() async throws {
+    func testPersonalLocalEngineKeepsOwnerNameWithoutDiarizingMicrophone() async throws {
         let directory = try fixture()
         try Data(#"{"files":{"mic":"mic.caf"},"audio_started_at":1000,"local_speaker_name":"Jamie Morgan","shared_microphone":false}"#.utf8)
+            .write(to: directory.appendingPathComponent("meta.json"))
+        try Data().write(to: directory.appendingPathComponent("mic.caf"))
+        let coordinator = TranscriptionCoordinator(makeEngine: { _, _ in RoomTranscriptionStub() }, completed: { _ in },
+            analyzeSpeakers: { _, _, _, _ in
+                XCTFail("Personal microphone should retain the unseparated owner track")
+                return SpeakerAnalysis(turns: [], names: [:])
+            })
+        try await coordinator.transcribe(directory, detectSpeakers: true)
+        let transcript = try JSONDecoder().decode(Transcript.self, from: Data(contentsOf: directory.appendingPathComponent("transcript.json")))
+        XCTAssertTrue(transcript.segments.allSatisfy { $0.speaker_name == "Jamie Morgan" && $0.attribution == "local_microphone" })
+    }
+
+    func testSharedMicrophoneSeparatesLocalVoicesAndNeverNamesOwner() async throws {
+        let directory = try fixture()
+        try Data(#"{"files":{"mic":"mic.caf"},"audio_started_at":1000,"local_speaker_name":"Jamie Morgan","shared_microphone":true}"#.utf8)
             .write(to: directory.appendingPathComponent("meta.json"))
         try Data().write(to: directory.appendingPathComponent("mic.caf"))
         let coordinator = TranscriptionCoordinator(makeEngine: { _, _ in RoomTranscriptionStub() }, completed: { _ in },

@@ -128,6 +128,8 @@ struct MeetingsSettingsView: View {
                 }
             }
 
+            MicrophoneModeSettingsSection(model: model)
+
             Section("Speakers") {
                 Toggle(isOn: $model.voiceMemory) {
                     Text("Remember speaker voices")
@@ -142,6 +144,22 @@ struct MeetingsSettingsView: View {
     private var statusColor: Color {
         guard appState.detectionEnabled else { return .secondary }
         return appState.needsMeetingPermission ? .orange : .green
+    }
+}
+
+struct MicrophoneModeSettingsSection: View {
+    @Bindable var model: SettingsModel
+
+    var body: some View {
+        Section {
+            Picker("Microphone", selection: $model.microphoneMode) {
+                ForEach(MicrophoneMode.allCases, id: \.self) { mode in
+                    Text(mode.title).tag(mode)
+                }
+            }
+        } footer: {
+            Footnote(model.microphoneMode.explanation + " Applies to new recordings. Existing recordings keep their recorded microphone mode.")
+        }
     }
 }
 

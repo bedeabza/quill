@@ -1,36 +1,31 @@
-# Microphone identity policy proposal
+# Personal and shared microphone modes
 
-This is the separate product-policy change on top of the generic recording
-features in PR #3. It is intentionally a draft for discussion.
+PR #4 adds **Quill → Meetings → Microphone**, independently of the recording tools
+in PR #3. The default is **Personal microphone**, preserving existing behavior.
 
-## Behavior to decide
+- Personal mode keeps automatic owner naming, local-tile evidence,
+  microphone-majority/roster-elimination inferences and editor suggestions.
+- Shared mode separates microphone voices when speaker detection is enabled.
+  A microphone or local tile does not establish a person's identity; source/roster
+  guesses and below-threshold editor suggestions stay unconfirmed. Accepted remote
+  speaking-tile evidence and manual names remain usable.
+- The picker persists the existing `shared_microphone` boolean. Existing true
+  values remain shared, and absent values remain personal. Failed saves retain
+  the prior selection and show an error without overwriting malformed config.
+- RecordingSession snapshots the choice at recording start. Transcription,
+  regeneration, preview, naming and S3/HTML exports use session metadata instead
+  of the current global setting. Changing Settings does not relabel old meetings.
+- Shared-session legacy source guesses display as unknown while personal-session
+  guesses remain visible. Original transcripts and observations are not rewritten.
 
-With a configured local name and Shared Microphone off, master may identify the
-local voice from microphone-majority evidence and infer a remaining roster name.
-This proposal instead leaves those voices unnamed until confirmed. A local tile
-or an audio source does not identify which person in a room spoke.
+## Validation — 2026-11-27
 
-- Remove microphone-majority and roster-elimination naming, including editor
-  defaults from source proportions, roster counts or below-threshold evidence.
-- Keep accepted remote speaking-tile evidence and explicitly confirmed names.
-- Diarize both local-engine tracks when speaker detection is enabled, including
-  when Shared Microphone is off. Without separation, label mic audio as local voices.
-- Display previously source-inferred identities as unknown; retain manual names
-  and original transcript/observation files.
-
-This changes the single-user workflow too. A personal/shared microphone mode that
-preserves automatic owner naming would be a different product decision; the base
-PR deliberately preserves today's behavior while this proposal is reviewed.
-
-## Validation
-
-- Debug build passed.
-- All 124 targeted regression methods passed in the standalone runner, including
-  the S3, export, identity, layout and playback regressions from the base PR.
-- Tests exercise multiple local voices, local-tile rejection, removal of roster
-  guesses, local-engine diarization with Shared Microphone off, unknown display
-  for legacy guesses, and preservation of manual names.
-- Uses synthetic recordings and injected engines/transports. No real meeting,
-  user transcript, live cloud upload or installed app is changed.
-- Full XCTest remains unavailable in the installed Command Line Tools; regression
-  methods run against production objects through the standalone assertion runner.
+- Debug and release builds passed. Both settings options were rendered and visually checked.
+- 130 targeted methods passed against production objects in
+  the standalone assertion runner. Tests cover configuration round trips, legacy
+  values, failed saves, recorded-mode stability, both local/Scribe paths, editor
+  suggestions and consistent preview/export identity handling, plus the existing
+  S3, export, linking, window layout and playback regressions.
+- Full XCTest is unavailable in the installed Command Line Tools; these results
+  are not a full XCTest/CI pass. Fixtures use synthetic recordings and injected
+  engines/transports. No real meeting or live cloud upload was tested.

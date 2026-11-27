@@ -142,7 +142,8 @@ enum RecordingsLibrary {
         let size = (try? json.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
         guard size <= 16_000_000 else { return large }
         if let data = try? Data(contentsOf: json), let transcript = try? JSONDecoder().decode(Transcript.self, from: data) {
-            let transcript = SpeakerIdentities.read(in: directory).resolved(transcript)
+            let transcript = SpeakerIdentities.read(in: directory).resolved(transcript,
+                sharedMicrophone: (try? SessionMeta.read(from: directory))?.sharedMicrophone ?? false)
             var turns: [TranscriptTurn] = []
             for segment in transcript.segments {
                 let speaker = segment.displayName

@@ -36,7 +36,7 @@ enum S3Markdown {
         var metadata = try json(directory.appendingPathComponent(filename))
         let decoded = try JSONDecoder().decode(Transcript.self, from: JSONSerialization.data(withJSONObject: metadata))
         let identities = SpeakerIdentities.read(in: directory)
-        let transcript = identities.resolved(decoded)
+        let transcript = identities.resolved(decoded, sharedMicrophone: session["shared_microphone"] as? Bool ?? false)
         metadata.removeValue(forKey: "segments")
         let saved = RecordingTitles.saved(in: directory)
         let title = saved?.title ?? transcript.meeting_title ?? session["meeting_title"] as? String ?? "Recorded conversation"
