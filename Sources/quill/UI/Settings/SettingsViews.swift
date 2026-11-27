@@ -54,8 +54,14 @@ struct TranscriptionSettingsView: View {
                     }
                 }
             } footer: {
-                Footnote("Local titles are made on this Mac from transcript keywords. AI titles send transcript excerpts to the selected service; when it’s unavailable, Quill uses a local title.")
+                Footnote("Detailed AI titles describe the meeting’s topics, context and decisions. Local titles use content sentences or keywords on this Mac when AI is unavailable.")
             }
+            if model.titleMode == .claude || model.titleMode == .auto || model.cleanupMode == .claude || model.cleanupMode == .auto {
+                Section("Claude account") {
+                    ClaudeSignInView()
+                }
+            }
+            S3SettingsSection()
         }
         .formStyle(.grouped)
         .navigationTitle("Transcription")
@@ -122,6 +128,8 @@ struct MeetingsSettingsView: View {
                 }
             }
 
+            MicrophoneModeSettingsSection(model: model)
+
             Section("Speakers") {
                 Toggle(isOn: $model.voiceMemory) {
                     Text("Remember speaker voices")
@@ -136,6 +144,22 @@ struct MeetingsSettingsView: View {
     private var statusColor: Color {
         guard appState.detectionEnabled else { return .secondary }
         return appState.needsMeetingPermission ? .orange : .green
+    }
+}
+
+struct MicrophoneModeSettingsSection: View {
+    @Bindable var model: SettingsModel
+
+    var body: some View {
+        Section {
+            Picker("Microphone", selection: $model.microphoneMode) {
+                ForEach(MicrophoneMode.allCases, id: \.self) { mode in
+                    Text(mode.title).tag(mode)
+                }
+            }
+        } footer: {
+            Footnote(model.microphoneMode.explanation + " Applies to new recordings. Existing recordings keep their recorded microphone mode.")
+        }
     }
 }
 

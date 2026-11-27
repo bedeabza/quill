@@ -33,6 +33,8 @@ actor TranscriptionCoordinator {
     private var engineOffline = false
     private let makeEngine: @Sendable (TranscriptionEngineKind, Bool) -> any TranscriptionEngine
     private let trash: @Sendable (URL) throws -> URL
+    private let completed: @Sendable (URL) async -> Void
+    private let analyzeSpeakers: @Sendable (URL, String, Int?, Bool) async throws -> SpeakerAnalysis
     private var lastFailure: String?
     private var statusHandler: (@Sendable (Status) -> Void)?
 
@@ -41,9 +43,15 @@ actor TranscriptionCoordinator {
         case .parakeet: return ParakeetEngine()
         case .elevenLabs: return ElevenLabsEngine(offline: offline)
         }
-    }, trash: @escaping @Sendable (URL) throws -> URL = RecordingsLibrary.systemTrash) {
+    }, trash: @escaping @Sendable (URL) throws -> URL = RecordingsLibrary.systemTrash,
+         completed: @escaping @Sendable (URL) async -> Void = { await S3UploadCoordinator.shared.enqueue($0) },
+         analyzeSpeakers: @escaping @Sendable (URL, String, Int?, Bool) async throws -> SpeakerAnalysis = { audio, source, count, samples in
+             try await SpeakerDiarizer.analyze(audio, source: source, speakerCount: count, captureVoiceSamples: samples)
+         }) {
         self.makeEngine = makeEngine
         self.trash = trash
+        self.completed = completed
+        self.analyzeSpeakers = analyzeSpeakers
     }
 
     func setStatusHandler(_ handler: @escaping @Sendable (Status) -> Void) {
@@ -159,6 +167,8 @@ actor TranscriptionCoordinator {
                     runHook(for: dir)
                 }
                 failures.removeValue(forKey: dir)
+                replacement?.unlock()
+                await completed(dir)
                 notifyUser(title: "quill — transcript ready", body: dir.lastPathComponent)
             } catch {
                 var message = String(describing: error)
@@ -259,9 +269,8 @@ actor TranscriptionCoordinator {
             if detectSpeakers && (track.speaker == "them" || meta.sharedMicrophone) && !segments.isEmpty {
                 do {
                     log(dir, "separating speakers in \(track.file)")
-                    var trackAnalysis = try await SpeakerDiarizer.analyze(audio, source: track.source,
-                                                                         speakerCount: track.source == "system" ? remoteSpeakerCount : nil,
-                                                                         captureVoiceSamples: track.source == "system" && Config.voiceMemoryEnabled())
+                    var trackAnalysis = try await analyzeSpeakers(audio, track.source,
+                        track.source == "system" ? remoteSpeakerCount : nil, track.source == "system" && Config.voiceMemoryEnabled())
                     if let started = meta.audioStartedAt, track.source == "system" {
                         trackAnalysis.named_spans = SpeakerAttribution.nameSpans(turns: trackAnalysis.turns, observations: observations,
                                                                audioStartedAt: started + offset, segments: segments)
@@ -449,6 +458,8 @@ struct Transcript: Codable, Sendable {
         var speaker_name: String? = nil
         var attribution: String? = nil
         var provider_speaker_id: String? = nil
+        /// User-confirmed person; provider voice IDs remain unchanged.
+        var person_id: String? = nil
 
         var displayName: String {
             if let speaker_name { return speaker_name }
@@ -457,6 +468,7 @@ struct Transcript: Codable, Sendable {
                 if attribution == "elevenlabs" { return "Speaker \(number)" }
                 return source == "mic" ? "Local speaker \(number)" : "Speaker \(number)"
             }
+            if source == "mic" { return "Local voices (unseparated)" }
             return speaker
         }
     }

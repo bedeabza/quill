@@ -138,11 +138,15 @@ timestamps. The transcript shows the verified named copy when one exists, and
 otherwise the original transcript with its anonymous labels (Speaker 1,
 Speaker 2…). When a combined ElevenLabs recording has no named copy, or its named copy
 leaves a voice unnamed, a **Speakers** block above the transcript shows one row
-per voice, "Speaker 1 is [name]", listing the recording's participants and
-**Unknown**. Each row is pre-selected with the most likely name and says why:
+per voice, with a name field and a menu listing the recording's participants and
+**Unknown**. Type a new name even if it was not in the participant list, or pick
+an existing name. Both the speaker header and transcript preview update immediately.
+**Cancel** discards these edits; **Apply Names** saves them. Each row is
+pre-selected with the most likely name and says why:
 the automatic name, the strongest speaking-tile evidence below the gate, the
 voice heard mostly on your microphone, or the only participant left. No name is
-pre-selected twice. **Apply Names** writes `transcript-named.json` and
+pre-selected twice. Shared-microphone recordings instead preselect only confirmed
+names or accepted speaking-tile evidence. **Apply Names** writes `transcript-named.json` and
 `transcript-named.md` with `manual` attribution, keeps a replaced named copy
 under `speaker-label-backup-<id>/`, and never edits `transcript.json`.
 **Name Speakers…** in the actions menu reopens the block for a complete named
@@ -171,9 +175,25 @@ it; `meeting-audio.wav` has that echo reduced.
 folder. The folder menu in the footer browses another recordings folder and
 returns to the default one.
 
+The speaker controls stay fixed above the scrolling transcript, including when
+everyone already has a name. Click a speaker to jump to their first turn; click
+again for the next, wrapping back to the first after the last. Each voice keeps
+its own position and colour when renamed, even if two voices share a name.
+**Edit Names** opens the name fields for an already named recording.
+**Hide Name Editor** keeps the speaker navigation visible and gives the
+transcript more room without discarding unsaved name previews.
+
 A recording's right-click menu, and the actions menu (…) next to its title in
 the detail pane, hold **Show in Finder**, **Regenerate…** (**Transcribe…** for a
-recording without a transcript) and **Delete…**.
+recording without a transcript), **Export HTML…** and **Delete…**.
+**Export HTML…** is also in the toolbar. Choose where to save a standalone HTML
+copy with the displayed title, date/time, participants, speaker names and current
+transcript wording. The named copy is used when displayed; unsaved speaker-name
+edits are included without applying them to the recording. Exporting another row
+uses that recording's saved names. The save dialog states what is included.
+The file opens offline in a browser, has speaker links and timestamps, supports
+printing and adapts to smaller screens. Recording files are not changed, and
+export does not upload audio or request AI processing.
 **Delete…**, or Delete (⌫) on the selected recording, asks for confirmation naming its title, date and time, then moves the
 whole recording folder to the Trash: audio, transcripts, cached ElevenLabs
 responses and regeneration backups. Nothing is erased permanently; **Put Back**
@@ -189,12 +209,23 @@ headers/text remain unchanged. **Meeting titles** in **Quill → Transcription**
 selects **Local titles**, **Automatic AI**, **Codex** or **Claude Code**. Local
 titles are the default. Only AI modes send transcript text: bounded excerpts
 from the beginning, middle and end go to an already configured, signed-in text
-service, with a simple local keyword title if it is unavailable. Each visible
+service. AI titles aim for 12–24 words describing the topic, context and decisions
+or next steps, up to 180 characters. If AI is unavailable, a representative
+content sentence or a local keyword title is used and marked **Local title**.
+Long titles wrap in the header and show up to three lines in the list. Each visible
 meeting gets a local title before the independent AI queue starts, so titling
 does not block transcription. A matching content checksum reuses an existing
 title, even after transcript metadata changes. **Generate Title** and
 **Refresh Title** request a title without uploading audio or retranscribing the
 meeting. Original meeting titles remain searchable.
+
+For Claude, **Sign In to Claude…** is available in **Transcription → Claude account**
+and beside a failed title. It opens the installed Claude Code helper's official
+subscription login in Terminal and the browser; no command needs to be typed.
+Complete that flow, return to Quill and click **Verify Connection**, then
+**Refresh Title**. Verification sends only a short synthetic message and does not
+upload meeting content. Quill does not collect passwords or copy OAuth tokens.
+The configured title provider is preserved; it is not switched on sign-in failure.
 
 **Quill → Permissions** checks Microphone, Accessibility (meeting detection),
 Screen Recording (Zoom speaker indicators), System audio, the Recordings folder,
@@ -264,6 +295,51 @@ recorded."). Recordings made before gaps were kept only show an early stop of
 at least 60 seconds, measured from the length of `mic.caf`. Speech the
 microphone missed is not in any file, so no transcript, upload or speaker
 naming can recover it.
+
+## S3 transcript archive
+
+S3 uploads are off by default and destination fields start empty.
+In **Quill → Transcription → S3 transcript archive**, explicitly enter the bucket, AWS
+region, assigned folder, access key ID and secret access key. Enable automatic
+uploads and click **Save S3 Settings**. The secret is stored in macOS Keychain;
+it is never written to the configuration file, transcript or logs.
+
+After each successful transcription/regeneration and any configured cleanup,
+Quill prepares the title and uploads one Markdown document. It prefers the saved
+named transcript. Its header includes the recording dates, duration, participant
+roster, speaker identities, engine/model, microphone gaps and other available
+meeting/processing metadata. Audio is not uploaded to S3. Names are the saved
+names; unsaved editor drafts are excluded.
+
+Files stay under the configured folder, for example
+`transcripts/2026-11-20-080000-sedinta-proiect-<unique-id>.md`. Date/time is UTC.
+Each correction uses a new name, and conditional uploads refuse to overwrite an
+existing object. The key must have write permission for that person's prefix;
+Quill does not need to list the bucket or read existing objects.
+
+The recording row, toolbar and detail show the S3 status, including **S3 sync
+blocked**. Each discussion has **Block S3 Sync** and **Sync Now** controls in its
+S3 panel and right-click menu:
+
+- **Block S3 Sync** keeps future transcriptions, corrections and retries local.
+  It persists across restarts and cancels an active request where possible. A
+  request already sent may have completed; files already on S3 are kept.
+- **Sync Now** sends a fresh Markdown copy even when the same version was already
+  uploaded or automatic syncing is off. For a blocked discussion the action is
+  **Unblock & Sync Now**. It requires valid saved S3 settings and credentials.
+- **Allow Automatic Sync** removes a discussion's block for future completions
+  and corrections. It does not revive previously cancelled work; use Sync Now
+  to send the current discussion immediately.
+
+The detail includes the destination, upload time and failure explanation.
+Transient errors retry with the same saved key and bytes, and pending uploads
+survive app restarts. Manual requests can retry while automatic sync is off;
+a discussion's block stops both. A changed transcript is marked **Changes not
+uploaded**. Applying speaker names queues a correction when automatic sync is
+on and the discussion is allowed. Enabling S3 does not upload the existing
+library in bulk. A failed S3 upload never removes a successful local transcript.
+
+See [S3 validation and limits](docs/s3-upload-validation.md).
 
 ## Optional transcript cleanup
 
@@ -388,7 +464,7 @@ The named copy changes names and attribution only, retaining speaker IDs,
 wording, segment boundaries and timestamps. Only clear local-only or
 remote-only audio windows may support the corresponding UI name.
 
-Voices without evidence-backed names can be named by two inferences on the
+In personal-microphone mode, voices without evidence-backed names can be named by two inferences on the
 combined recording, each recorded as the segment's `attribution` and in
 `speaker-mapping.json` (`name`, `attribution`, `local_seconds`, `remote_seconds`),
 so they stay distinguishable from evidence:
@@ -409,7 +485,24 @@ inference, as does another voice already named as you. The inferences use the
 roster, which can miss someone who never appeared in the meeting window; check
 inferred names in the named copy. `--no-speakers` disables them. Overlap and uncertain source
 windows do not vote. Shared-microphone local tiles cannot establish individual
-names. Legacy separate-track recordings retain their original refresh rules.
+names. Shared mode also leaves source/roster guesses and below-threshold editor
+suggestions unconfirmed; accepted remote-tile evidence and manual names remain
+available. Legacy personal recordings retain their original refresh rules.
+
+In **Recordings → Edit Names**, use **Same person as…** to confirm that two
+provider voices belong to one person. **Separate this voice** reverses a link.
+Typing equal names alone does not merge people. Under **Participant aliases**,
+choose a main name for alternate roster labels (for example, Alex/Alexandra or
+Jamie Morgan/Morgan Jamie); aliases do not automatically link voices. Repeated exact
+roster labels appear once regardless of local/remote observations.
+
+**Apply Names** saves `speaker-identities.json` and a named transcript with a
+backup of the previous versions. The original transcript and observations stay
+unchanged. Confirmed people share navigation and colours in the app and HTML
+export. S3 Markdown includes canonical participant names, confirmed person IDs,
+raw voice IDs and the recorded metadata. Saved corrections queue a new S3 file
+when uploading is enabled. Voice links are bound to the original transcript's
+SHA-256 and ignored after regeneration; roster aliases remain available. Existing automatic and manual names are retained.
 
 Both variants include the observed participant roster and, when exposed by the
 identified meeting's own window/document/tab, the meeting title. The title is
@@ -474,9 +567,18 @@ A unique five-word phrase can match a caption to the local transcript, but a
 wrong caption language may prevent that match. Quill no longer enables captions
 by default. Set `auto_meeting_captions` to `true` to restore that behavior.
 
-Your microphone uses the configured local name, captured in session metadata
-at recording time. For several people sharing your microphone, set
-`shared_microphone` to `true` to separate those voices too.
+Choose **Quill → Meetings → Microphone**:
+
+- **Personal microphone** (default) keeps automatic owner naming and existing
+  speaker-name suggestions. The configured local name is captured with the session.
+- **Shared microphone** separates local voices when speaker detection is enabled,
+  and leaves their identities unconfirmed instead of guessing from the microphone
+  or participant roster. Manual names and accepted remote evidence remain available.
+
+The choice applies to new recordings and is saved as `shared_microphone` in each
+session's metadata. Transcription, regeneration, speaker editing and exports use
+that recorded choice, so changing Settings does not relabel old meetings. Existing
+configs with `shared_microphone: true` remain shared; missing values mean personal.
 
 Optional configuration in `~/.config/quill/config.json`:
 

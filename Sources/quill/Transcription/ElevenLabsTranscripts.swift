@@ -244,9 +244,9 @@ enum ElevenLabsTranscripts {
             let turns = speech.flatMap { id, intervals in intervals.map { SpeakerTurn(speaker_id: id, start: $0.start, end: $0.end) } }
             analysis.turns += turns.map { SpeakerTurn(speaker_id: $0.speaker_id, start: $0.start + offset, end: $0.end + offset) }
             statuses[source] = result.segments.isEmpty ? "no_speech_detected" : "elevenlabs"
-            guard source == "system" || source == "meeting" else { continue }
+            guard source == "system" || source == "meeting" || meta.sharedMicrophone else { continue }
             let spans: [NamedSpeakerSpan]
-            if let started = meta.audioStartedAt {
+            if source != "mic", (inferNames || !meta.sharedMicrophone), let started = meta.audioStartedAt {
                 spans = timelineSpans(observations, origin: started + offset, meetingAudio: result.meetingAudio,
                                       localName: meta.localSpeakerName, sharedMicrophone: meta.sharedMicrophone)
             } else { spans = [] }
@@ -305,7 +305,9 @@ enum ElevenLabsTranscripts {
         var report = MappingReport(accepted: !reports.isEmpty && reports.allSatisfy { $0.name != nil }, speakers: reports)
         if tracks.contains(where: { $0.track.source == "meeting" }) {
             report.rule = "Every speaker in the combined meeting recording needs >=95% agreement by observed speech duration, observed over >=25% of their speech. Only clear matching-source audio windows may vote. Missing evidence fails; unobserved speech is excluded from the agreement denominator."
-            if inferNames {
+            if meta.sharedMicrophone {
+                report.inference = "Shared microphone: audio sources and roster counts do not identify people. Local voices require confirmation."
+            } else if inferNames {
                 report.inference = "Unnamed voices may be inferred and are labelled so: local_microphone_majority when exactly one voice is >=90% microphone-only (>=5 s, >=25% of its speech) and no other voice is >=50%; then roster_elimination when voices and distinct roster names are equal in number and exactly one voice and one name remain. Evidence naming someone else blocks either inference."
             }
         }

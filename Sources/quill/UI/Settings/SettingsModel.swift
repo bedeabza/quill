@@ -59,6 +59,22 @@ final class SettingsModel {
         }
     }
 
+    /// Captured in session metadata when the next recording starts.
+    var microphoneMode: MicrophoneMode {
+        get { storedMicrophoneMode }
+        set {
+            guard newValue != storedMicrophoneMode else { return }
+            do { try Config.setMicrophoneMode(newValue, at: configURL) }
+            catch {
+                message = "Could not save the microphone setting: \(error)"
+                storedMicrophoneMode = storedMicrophoneMode
+                return
+            }
+            storedMicrophoneMode = newValue
+            message = nil
+        }
+    }
+
     /// Remember speaker voices.
     var voiceMemory: Bool {
         get { storedVoiceMemory }
@@ -81,12 +97,15 @@ final class SettingsModel {
     private var storedCleanup: PostProcessingMode = .off
     private var storedTitleMode: PostProcessingMode = .off
     private var storedVoiceMemory = true
+    private var storedMicrophoneMode: MicrophoneMode = .personal
+    @ObservationIgnored private let configURL: URL
     @ObservationIgnored private let appState: AppState
     @ObservationIgnored private let keyStore: ElevenLabsKeyStore
 
-    init(appState: AppState, keyStore: ElevenLabsKeyStore = .shared) {
+    init(appState: AppState, keyStore: ElevenLabsKeyStore = .shared, configURL: URL = Config.path) {
         self.appState = appState
         self.keyStore = keyStore
+        self.configURL = configURL
         reload()
     }
 
@@ -97,6 +116,7 @@ final class SettingsModel {
         storedCleanup = Config.postProcessing().mode
         storedTitleMode = Config.recordingTitleMode()
         storedVoiceMemory = Config.voiceMemoryEnabled()
+        storedMicrophoneMode = Config.microphoneMode(at: configURL)
         keyState = Self.keyState(keyStore.checkAccess())
     }
 

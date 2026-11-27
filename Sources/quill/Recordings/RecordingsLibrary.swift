@@ -13,6 +13,11 @@ struct RecordingEntry: Sendable {
     var endedAt: Date? = nil
     var titleSource: String? = nil
     var originalTitle: String? = nil
+    var titleStatus: String? = nil
+    var s3Upload: S3UploadRecord? = nil
+    var s3Current = false
+    var s3SyncPreference = S3SyncPreference()
+    var s3Blocked: Bool { s3SyncPreference.blocked }
 }
 
 struct TranscriptTurn: Identifiable, Equatable, Sendable {
@@ -23,6 +28,23 @@ struct TranscriptTurn: Identifiable, Equatable, Sendable {
     let end: Double
     let speaker: String
     let text: String
+    /// Stable provider voice identity, independent of its displayed name.
+    var speakerID: String? = nil
+    var personID: String? = nil
+    var navigationID: String { personID ?? speakerID ?? speaker }
+}
+
+/// Each voice has its own cursor. Renaming a voice never changes its route.
+struct SpeakerTurnNavigation {
+    private var previous: [String: Int] = [:]
+
+    mutating func next(_ speaker: String, in turns: [TranscriptTurn]) -> TranscriptTurn? {
+        let matches = turns.filter { $0.navigationID == speaker }
+        guard let first = matches.first else { return nil }
+        let next = previous[speaker].flatMap { last in matches.first { $0.id > last } } ?? first
+        previous[speaker] = next.id
+        return next
+    }
 }
 
 enum TranscriptPreview: Equatable, Sendable {
@@ -60,13 +82,15 @@ enum RecordingsLibrary {
             let ready = meta.map { !$0.tracks.isEmpty && $0.tracks.allSatisfy { track in
                 fm.isReadableFile(atPath: directory.appendingPathComponent(track.file).path)
             } } ?? false
+            let upload = S3UploadRecord.read(in: directory)
             return RecordingEntry(directory: directory, title: title, startedAt: started,
-                duration: duration, participants: roster?.participants.map(\.name).sorted() ?? [],
+                duration: duration, participants: SpeakerIdentities.read(in: directory).participantNames(roster?.participants.map(\.name) ?? []),
                 hasTranscript: fm.fileExists(atPath: directory.appendingPathComponent("transcript.json").path)
                     || fm.fileExists(atPath: directory.appendingPathComponent("transcript.md").path),
                 hasNamedTranscript: fm.fileExists(atPath: directory.appendingPathComponent("transcript-named.json").path)
                     || fm.fileExists(atPath: directory.appendingPathComponent("transcript-named.md").path), canRegenerate: ready,
-                endedAt: ended, titleSource: generated?.source, originalTitle: meta?.meetingTitle)
+                endedAt: ended, titleSource: generated?.source, originalTitle: meta?.meetingTitle, titleStatus: generated?.status,
+                s3Upload: upload, s3Current: upload?.current(in: directory) ?? false, s3SyncPreference: S3SyncPreference.read(in: directory))
         }.sorted { $0.startedAt == $1.startedAt ? $0.directory.lastPathComponent > $1.directory.lastPathComponent : $0.startedAt > $1.startedAt }
     }
 
@@ -74,6 +98,14 @@ enum RecordingsLibrary {
     /// that transcription, regeneration and the speaker commands take, so none
     /// of them can start on it mid-move. Returns where the folder went.
     static func moveToTrash(_ directory: URL, trash: (URL) throws -> URL = systemTrash) throws -> URL {
+        var uploadLock: Int32 = -1
+        defer { if uploadLock >= 0 { flock(uploadLock, LOCK_UN); close(uploadLock) } }
+        if FileManager.default.fileExists(atPath: directory.appendingPathComponent(".s3-upload.lock").path) {
+            uploadLock = open(directory.appendingPathComponent(".s3-upload.lock").path, O_RDWR | O_CLOEXEC)
+            guard uploadLock >= 0, flock(uploadLock, LOCK_EX | LOCK_NB) == 0 else {
+                throw TranscriptionFailure("This meeting is uploading to S3. Delete it when the upload finishes.")
+            }
+        }
         let lock = open(directory.appendingPathComponent(".postprocess.lock").path, O_CREAT | O_RDWR | O_CLOEXEC, 0o600)
         guard lock >= 0 else { throw TranscriptionFailure("Could not lock this recording. Open its folder to inspect it.") }
         defer { flock(lock, LOCK_UN); close(lock) }
@@ -110,15 +142,17 @@ enum RecordingsLibrary {
         let size = (try? json.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
         guard size <= 16_000_000 else { return large }
         if let data = try? Data(contentsOf: json), let transcript = try? JSONDecoder().decode(Transcript.self, from: data) {
+            let transcript = SpeakerIdentities.read(in: directory).resolved(transcript,
+                sharedMicrophone: (try? SessionMeta.read(from: directory))?.sharedMicrophone ?? false)
             var turns: [TranscriptTurn] = []
             for segment in transcript.segments {
                 let speaker = segment.displayName
                 let start = max(0, Double(segment.start_ms) / 1000), end = max(start, Double(segment.end_ms) / 1000)
-                if let last = turns.last, last.speaker == speaker {
+                if let last = turns.last, last.speakerID == segment.speaker, last.speaker == speaker {
                     turns[turns.count - 1] = TranscriptTurn(id: last.id, start: last.start, end: max(last.end, end),
-                                                            speaker: speaker, text: last.text + " " + segment.text)
+                                                            speaker: speaker, text: last.text + " " + segment.text, speakerID: segment.speaker, personID: segment.person_id)
                 } else {
-                    turns.append(TranscriptTurn(id: turns.count, start: start, end: end, speaker: speaker, text: segment.text))
+                    turns.append(TranscriptTurn(id: turns.count, start: start, end: end, speaker: speaker, text: segment.text, speakerID: segment.speaker, personID: segment.person_id))
                 }
             }
             return .turns(turns)
