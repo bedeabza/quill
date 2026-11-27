@@ -320,12 +320,18 @@ actor MeetingScanner {
                     if leave && (service == "Slack" || !ended) {
                         // A call window that returns after its window was hidden or
                         // replaced (Zoom screen sharing) continues the same meeting.
-                        let existing = known.values.first { $0.pid == app.pid && CFEqual($0.window, window.element) }
-                            ?? known.values.first { entry in
-                                entry.pid == app.pid && !entry.isBrowser && entry.meeting.service == service
-                                    && endedSince[entry.meeting.id] == nil
-                                    && !windows.contains { CFEqual($0.element, entry.window) }
+                        var existing = known.values.first { $0.pid == app.pid && CFEqual($0.window, window.element) }
+                        if existing == nil {
+                            // Keep AX windows on this actor, outside nonisolated autoclosures.
+                            for entry in known.values {
+                                guard entry.pid == app.pid, !entry.isBrowser, entry.meeting.service == service,
+                                      endedSince[entry.meeting.id] == nil else { continue }
+                                if !windows.contains(where: { CFEqual($0.element, entry.window) }) {
+                                    existing = entry
+                                    break
+                                }
                             }
+                        }
                         let id = existing?.meeting.id ?? nextID(pid: app.pid)
                         let title = MeetingEvidence.title(candidates: meetingTitleCandidates(window.nodes)
                             + [string(window.element, kAXTitleAttribute)], service: service)
@@ -406,9 +412,15 @@ actor MeetingScanner {
                 guard let window = windows.first(where: { CFEqual($0.element, entry.window) }) else {
                     // A closed call window is a positive end signal. If another native
                     // call window appeared, keep recording through layout transitions.
-                    let anotherCall = app.service != nil && windows.contains { hasCallControls($0, service: app.service) }
+                    var anotherCall = false
+                    if app.service != nil {
+                        anotherCall = windows.contains { hasCallControls($0, service: app.service) }
+                    }
                     let zoom = app.service == "Zoom" && entry.meeting.service == "Zoom"
-                    let sharing = zoom && !anotherCall && windows.contains(where: isZoomShareWindow)
+                    var sharing = false
+                    if zoom && !anotherCall {
+                        sharing = windows.contains(where: isZoomShareWindow)
+                    }
                     let audio = zoom && !anotherCall && !sharing && AppAudioActivity.isRunning(pid: app.pid, bundleID: app.bundleID)
                     result.observations[entry.meeting.id] = MeetingEvidence.closedCallWindow(entry.meeting, anotherCallWindow: anotherCall,
                                                                                              zoomShareWindow: sharing, zoomAudioRunning: audio)
